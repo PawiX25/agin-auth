@@ -77,6 +77,10 @@ struct PgpChallengeBody {
     signature: String,
 }
 
+fn invalid_signature() -> AxumError {
+    AxumError::unauthorized(eyre::eyre!("Invalid signature"))
+}
+
 /// Respond to PGP challenge
 ///
 /// Sign the challenge obtained from `GET /api/login/pgp/challenge` with the user's PGP key and send the signature here to complete the login process.
@@ -110,27 +114,23 @@ async fn respond_to_pgp_challenge(
         )));
     }
 
-    let user = get_user(&state.database, &body.username).await?;
-
-    let user = user.ok_or_else(|| AxumError::unauthorized(eyre::eyre!("No user")))?;
-
-    if user.auth_factors.pgp.is_empty() {
-        return Err(AxumError::unauthorized(eyre::eyre!("Invalid signature")));
-    }
-
-    let (parsed, _) = Any::from_string(&body.signature)
-        .map_err(|_| AxumError::bad_request(eyre::eyre!("Invalid signature format")))?;
+    let (parsed, _) = Any::from_string(&body.signature).map_err(|_| invalid_signature())?;
 
     let Any::Cleartext(msg) = parsed else {
-        return Err(AxumError::bad_request(eyre::eyre!(
-            "Expected a cleartext signed message"
-        )));
+        return Err(invalid_signature());
     };
 
     let signed_text = msg.signed_text();
     if signed_text.trim() != challenge_config.challenge {
-        return Err(AxumError::unauthorized(eyre::eyre!("Invalid signature")));
+        return Err(invalid_signature());
     }
+
+    let user = get_user(&state.database, &body.username).await?;
+
+    let user = match user {
+        Some(user) if !user.auth_factors.pgp.is_empty() => user,
+        _ => return Err(invalid_signature()),
+    };
 
     // Try verifying against all registered PGP keys
     let mut verified = false;
@@ -144,7 +144,7 @@ async fn respond_to_pgp_challenge(
     }
 
     if !verified {
-        return Err(AxumError::unauthorized(eyre::eyre!("Invalid signature")));
+        return Err(invalid_signature());
     }
 
     session

@@ -12,11 +12,11 @@ import { Alert, AlertDescription, AlertTitle } from '@components/ui/alert';
 export function WebAuthn() {
     const setScreen = useSetAtom(screenAtom);
 
-    const webauthn = useWebAuthn2FA();
+    const { loginAsync, isPending, error } = useWebAuthn2FA();
 
     const startAuth = useCallback(async () => {
-        await webauthn.loginAsync();
-    }, []);
+        await loginAsync();
+    }, [loginAsync]);
 
     useHotkeys([['Enter', startAuth]]);
 
@@ -32,7 +32,7 @@ export function WebAuthn() {
                 </p>
             </div>
             <div className="w-sm mt-6 flex flex-col gap-4">
-                {webauthn.error && (
+                {error && (
                     <Alert variant="destructive">
                         <IconAlertCircle />
                         <AlertTitle>Authentication Failed</AlertTitle>
@@ -41,7 +41,7 @@ export function WebAuthn() {
                         </AlertDescription>
                     </Alert>
                 )}
-                <Button onClick={startAuth} disabled={webauthn.isPending}>
+                <Button onClick={startAuth} disabled={isPending}>
                     <IconFingerprint /> Read security key
                 </Button>
                 {/* <div className="flex justify-center mb-1">Loading</div> */}

@@ -27,8 +27,7 @@ export function useWebAuthnAssertion(
             });
 
             if (!assertion) {
-                alert('error!');
-                return;
+                return false;
             }
 
             await finish.mutateAsync({
@@ -62,10 +61,13 @@ export function useWebAuthnAssertion(
                 },
             });
             setError(null);
+            return true;
         } catch (error) {
             setError(error as any);
+            return false;
+        } finally {
+            setIsPending(false);
         }
-        setIsPending(false);
     }, [begin, finish]);
 
     return { loginAsync, isPending, error };

@@ -1,25 +1,14 @@
 import { LoginIcon } from '@components/ui/login-icon';
-import {
-    IconArrowRight,
-    IconFingerprint,
-    IconKey,
-    IconPassword,
-    IconShieldLock,
-} from '@tabler/icons-react';
+import { IconArrowRight, IconFingerprint, IconKey, IconPassword, IconShieldLock } from '@tabler/icons-react';
 import { FormSchema, screenAtom } from './page';
-import { atom, useAtomValue, useSetAtom } from 'jotai';
-import { paths } from 'api-schema';
+import { useSetAtom } from 'jotai';
 import { LoginOption, LoginOptionProps } from '@components/ui/login-option';
 import Link from 'next/link';
 import { LinkComponent } from '@components/ui/link';
 import { useFormContext } from 'react-hook-form';
+import { FIRST_FACTOR_OPTIONS, getPreferredFirstFactor } from './first-factor';
 
-export type TLoginOption =
-    paths['/api/login/options']['get']['responses']['200']['content']['application/json']['options'][number];
-
-export const optionsAtom = atom<TLoginOption[]>();
-
-export const OPTIONS_MAP: Record<TLoginOption, LoginOptionProps> = {
+export const OPTIONS_MAP: Record<(typeof FIRST_FACTOR_OPTIONS)[number], LoginOptionProps> = {
     password: {
         title: 'Password',
         icon: IconPassword,
@@ -39,9 +28,12 @@ export const OPTIONS_MAP: Record<TLoginOption, LoginOptionProps> = {
 
 export function LoginOptions() {
     const setScreen = useSetAtom(screenAtom);
-    const options = useAtomValue(optionsAtom);
     const form = useFormContext<FormSchema>();
     const username = form.watch('username');
+    const preferred = getPreferredFirstFactor(username);
+    const orderedOptions = preferred
+        ? [preferred, ...FIRST_FACTOR_OPTIONS.filter((o) => o !== preferred)]
+        : FIRST_FACTOR_OPTIONS;
 
     return (
         <div className="flex flex-col items-center">
@@ -49,28 +41,31 @@ export function LoginOptions() {
                 <IconShieldLock />
             </LoginIcon>
             <div className="mt-4 flex flex-col gap-1">
-                <h1 className="font-semibold text-xl text-center">Choose Authentication Method</h1>
+                <h1 className="font-semibold text-xl text-center">Choose how to continue</h1>
                 <p className="text-sm text-center text-muted-foreground">
-                    Select how you{"'"}d like to verify your identity to continue
+                    Continue as {username}{' '}
+                    <LinkComponent onClick={() => setScreen('welcome')}>Not you?</LinkComponent>
                 </p>
             </div>
             <div className="w-sm mt-6 flex flex-col gap-3">
-                {options?.map((o) => (
+                {orderedOptions.map((option) => (
                     <LoginOption
-                        {...OPTIONS_MAP[o]}
+                        {...OPTIONS_MAP[option]}
                         clickable
-                        key={o}
+                        key={option}
                         className="m-0"
-                        onClick={() => setScreen(o)}
+                        onClick={() => setScreen(option)}
                     />
                 ))}
-                {options?.includes('password') && (
-                    <div className="text-muted-foreground text-center text-sm mt-2">
-                        <LinkComponent>
-                            <Link href={`/forgot-password${username ? `?email=${encodeURIComponent(username)}` : ''}`}>Forgot Password?</Link>
-                        </LinkComponent>
-                    </div>
-                )}
+                <div className="text-muted-foreground text-center text-sm">
+                    <LinkComponent>
+                        <Link
+                            href={`/forgot-password${username ? `?email=${encodeURIComponent(username)}` : ''}`}
+                        >
+                            Forgot Password?
+                        </Link>
+                    </LinkComponent>
+                </div>
             </div>
         </div>
     );

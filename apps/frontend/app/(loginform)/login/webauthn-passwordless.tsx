@@ -12,11 +12,11 @@ import { Alert, AlertDescription, AlertTitle } from '@components/ui/alert';
 export function WebAuthnPasswordless() {
     const setScreen = useSetAtom(screenAtom);
 
-    const webauthn = useWebAuthnPasswordless();
+    const { error, isPending, loginAsync } = useWebAuthnPasswordless();
 
     const startAuth = useCallback(async () => {
-        await webauthn.loginAsync();
-    }, []);
+        await loginAsync();
+    }, [loginAsync]);
 
     useHotkeys([['Enter', startAuth]]);
 
@@ -32,7 +32,7 @@ export function WebAuthnPasswordless() {
                 </p>
             </div>
             <div className="w-sm mt-6 flex flex-col gap-4">
-                {webauthn.error && (
+                {error && (
                     <Alert variant="destructive">
                         <IconAlertCircle />
                         <AlertTitle>Authentication Failed</AlertTitle>
@@ -41,12 +41,12 @@ export function WebAuthnPasswordless() {
                         </AlertDescription>
                     </Alert>
                 )}
-                <Button onClick={startAuth} disabled={webauthn.isPending}>
+                <Button onClick={startAuth} disabled={isPending}>
                     <IconFingerprint /> Use passkey
                 </Button>
                 <div className="text-muted-foreground text-center text-sm">
                     <LinkComponent>
-                        <div onClick={() => setScreen('welcome')}>Back to login</div>
+                        <div onClick={() => setScreen('login-options')}>More Options</div>
                     </LinkComponent>
                 </div>
             </div>

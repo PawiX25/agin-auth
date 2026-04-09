@@ -5,7 +5,8 @@ import { useForm } from 'react-hook-form';
 import { LinkComponent } from '@components/ui/link';
 import z from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { atom, useAtomValue } from 'jotai';
+import { atom, useAtomValue, useSetAtom } from 'jotai';
+import { useEffect } from 'react';
 import { Welcome } from './welcome';
 import { LoginOptions } from './login-options';
 import { Password } from './password';
@@ -40,8 +41,19 @@ export type LoginScreen =
 
 export const screenAtom = atom<LoginScreen>('welcome');
 
+const screensRequiringUsername: LoginScreen[] = [
+    'password',
+    'pgp',
+    'login-options',
+    'two-factor-options',
+    'totp',
+    'recoverycode',
+    'webauthn',
+];
+
 export default function Page() {
     const screen = useAtomValue(screenAtom);
+    const setScreen = useSetAtom(screenAtom);
 
     const form = useForm<FormSchema>({
         resolver: zodResolver(formSchema),
@@ -53,6 +65,14 @@ export default function Page() {
             pgp_signature: '',
         },
     });
+
+    const username = form.watch('username');
+
+    useEffect(() => {
+        if (screensRequiringUsername.includes(screen) && !username?.trim()) {
+            setScreen('welcome');
+        }
+    }, [screen, username, setScreen]);
 
     return (
         <Form {...form}>

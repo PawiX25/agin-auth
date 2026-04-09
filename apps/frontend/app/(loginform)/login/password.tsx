@@ -17,7 +17,7 @@ export function Password() {
 
     const username = form.watch('username');
 
-    const { onSuccess } = useLoginSuccess();
+    const { onSuccess } = useLoginSuccess({ firstFactor: 'password', username });
 
     const passwordLogin = $api.useMutation('post', '/api/login/password', {
         onSuccess,
