@@ -10,7 +10,7 @@ use utoipa::ToSchema;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::record_session,
+    database::{get_user_by_id, record_session},
     routes::api::AuthState,
     state::AppState,
 };
@@ -116,4 +116,24 @@ pub struct UnauthorizedError {
 #[schema(example = json!({"error": "Forbidden"}))]
 pub struct ForbiddenError {
     error: String,
+}
+
+/// Middleware that ensures the user is an admin.
+/// Must be applied after `require_auth` so that `UserId` is available in extensions.
+pub async fn require_admin(
+    Extension(state): Extension<AppState>,
+    Extension(user_id): Extension<UserId>,
+    request: Request,
+    next: Next,
+) -> AxumResult<Response> {
+    let user = get_user_by_id(&state.database, &user_id)
+        .await
+        .map_err(|_| AxumError::forbidden(eyre::eyre!("Forbidden")))?
+        .ok_or_else(|| AxumError::forbidden(eyre::eyre!("Forbidden")))?;
+
+    if !user.is_admin {
+        return Err(AxumError::forbidden(eyre::eyre!("Forbidden")));
+    }
+
+    Ok(next.run(request).await)
 }

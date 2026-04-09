@@ -505,6 +505,8 @@ database_object!(User {
     email: String,
     #[serde(default)]
     email_confirmed: bool,
+    #[serde(default)]
+    is_admin: bool,
     auth_factors: AuthFactors,
 
     #[serde(with = "vec_oid_to_vec_string")]
