@@ -15,11 +15,18 @@ use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 
-use crate::{middlewares::require_auth::require_auth, state::AppState};
+use crate::{
+    middlewares::require_auth::{require_admin, require_auth},
+    state::AppState,
+};
 
 pub fn routes() -> OpenApiRouter<AppState> {
-    let auth = OpenApiRouter::new()
+    let admin = OpenApiRouter::new()
         .nest("/admin", admin::routes())
+        .layer(middleware::from_fn(require_admin));
+
+    let auth = OpenApiRouter::new()
+        .merge(admin)
         .nest("/applications", applications::routes())
         .nest("/logout", logout::routes())
         .nest("/settings", settings::routes())

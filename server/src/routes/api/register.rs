@@ -95,6 +95,7 @@ async fn register(
         preferred_username: body.preferred_username,
         email: body.email.clone(),
         email_confirmed: false,
+        is_admin: false,
         auth_factors: AuthFactors {
             password: PasswordFactor {
                 password_hash: Some(hashed_password),
