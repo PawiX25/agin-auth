@@ -160,6 +160,57 @@ async fn ensure_database_indexes(database: &Database) -> Result<()> {
         .await
         .wrap_err("Failed to create applications_slug_unique_idx")?;
 
+    // TTL index for authorization codes (15 minutes)
+    let auth_codes = database.collection::<bson::Document>("authorization_codes");
+    auth_codes
+        .create_index(
+            IndexModel::builder()
+                .keys(doc! { "created_at": 1_i32 })
+                .options(
+                    IndexOptions::builder()
+                        .name(Some("authorization_codes_ttl_idx".to_string()))
+                        .expire_after(StdDuration::from_secs(15 * 60))
+                        .build(),
+                )
+                .build(),
+        )
+        .await
+        .wrap_err("Failed to create authorization_codes_ttl_idx")?;
+
+    // TTL index for refresh tokens (31 days)
+    let refresh_tokens = database.collection::<bson::Document>("refresh_tokens");
+    refresh_tokens
+        .create_index(
+            IndexModel::builder()
+                .keys(doc! { "created_at": 1_i32 })
+                .options(
+                    IndexOptions::builder()
+                        .name(Some("refresh_tokens_ttl_idx".to_string()))
+                        .expire_after(StdDuration::from_secs(31 * 24 * 60 * 60))
+                        .build(),
+                )
+                .build(),
+        )
+        .await
+        .wrap_err("Failed to create refresh_tokens_ttl_idx")?;
+
+    // TTL index for revoked access tokens (1 hour — matches access token lifetime)
+    let revoked_at = database.collection::<bson::Document>("revoked_access_tokens");
+    revoked_at
+        .create_index(
+            IndexModel::builder()
+                .keys(doc! { "created_at": 1_i32 })
+                .options(
+                    IndexOptions::builder()
+                        .name(Some("revoked_access_tokens_ttl_idx".to_string()))
+                        .expire_after(StdDuration::from_secs(3600))
+                        .build(),
+                )
+                .build(),
+        )
+        .await
+        .wrap_err("Failed to create revoked_access_tokens_ttl_idx")?;
+
     Ok(())
 }
 
