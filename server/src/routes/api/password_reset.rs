@@ -10,7 +10,7 @@ use validator::Validate;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::User,
+    database::{User, invalidate_user_sessions},
     state::AppState,
     utils::{generate_reset_token, hash_password, hash_token},
 };
@@ -160,6 +160,12 @@ async fn confirm_reset(
         .eq(&1)
         .then_some(())
         .wrap_err("User not found")?;
+
+    if let Err(e) =
+        invalidate_user_sessions(&state.database, &state.redis_pool, &token_doc.user_id, None).await
+    {
+        tracing::error!(error = ?e, "Failed to invalidate user sessions after password reset");
+    }
 
     state
         .database

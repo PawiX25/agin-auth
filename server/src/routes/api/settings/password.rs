@@ -7,9 +7,11 @@ use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use validator::Validate;
 
+use tower_sessions::Session;
+
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::{User, get_user_by_id},
+    database::{User, get_user_by_id, invalidate_user_sessions},
     middlewares::require_auth::{UnauthorizedError, UserId},
     state::AppState,
     utils::{hash_password, verify_password},
@@ -49,6 +51,7 @@ struct ChangePasswordResponse {
 async fn change_password(
     Extension(state): Extension<AppState>,
     Extension(user_id): Extension<UserId>,
+    session: Session,
     Valid(Json(body)): Valid<Json<ChangePasswordBody>>,
 ) -> AxumResult<Json<ChangePasswordResponse>> {
     let user = get_user_by_id(&state.database, &user_id)
@@ -81,6 +84,18 @@ async fn change_password(
         .eq(&1)
         .then_some(())
         .wrap_err("User not found")?;
+
+    let current_session_id = session.id().map(|id| id.to_string());
+    if let Err(e) = invalidate_user_sessions(
+        &state.database,
+        &state.redis_pool,
+        &user_id,
+        current_session_id.as_deref(),
+    )
+    .await
+    {
+        tracing::error!(error = ?e, "Failed to invalidate user sessions after password change");
+    }
 
     Ok(Json(ChangePasswordResponse { success: true }))
 }

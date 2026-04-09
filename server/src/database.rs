@@ -15,7 +15,7 @@ use tower_sessions::{
 };
 use tower_sessions_redis_store::{
     RedisStore,
-    fred::prelude::{ClientLike, Config, Pool},
+    fred::prelude::{ClientLike, Config, KeysInterface, Pool},
 };
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -178,6 +178,38 @@ pub async fn record_session(
         )
         .await
         .wrap_err("Failed to backfill public session ID")?;
+
+    Ok(())
+}
+
+pub async fn invalidate_user_sessions(
+    database: &Database,
+    redis_pool: &Pool,
+    user_id: &ObjectId,
+    except_session_id: Option<&str>,
+) -> Result<()> {
+    let filter = if let Some(except) = except_session_id {
+        doc! { "user_id": user_id, "_id": { "$ne": except } }
+    } else {
+        doc! { "user_id": user_id }
+    };
+
+    let mut cursor = database
+        .collection::<SessionRecord>("sessions")
+        .find(filter.clone())
+        .await
+        .wrap_err("Failed to query sessions for invalidation")?;
+
+    use futures::TryStreamExt;
+    while let Some(record) = cursor.try_next().await? {
+        let _: i64 = redis_pool.del(&record.id).await.unwrap_or(0);
+    }
+
+    database
+        .collection::<SessionRecord>("sessions")
+        .delete_many(filter)
+        .await
+        .wrap_err("Failed to delete session records")?;
 
     Ok(())
 }
