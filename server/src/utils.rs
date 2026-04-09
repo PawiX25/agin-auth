@@ -10,6 +10,15 @@ pub fn generate_client_id() -> String {
         .collect()
 }
 
+pub fn generate_client_secret() -> String {
+    let rng = ThreadRng::default();
+
+    rng.sample_iter(&Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect()
+}
+
 pub fn generate_reset_token() -> String {
     let rng = ThreadRng::default();
 

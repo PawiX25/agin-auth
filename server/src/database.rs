@@ -96,6 +96,70 @@ async fn ensure_database_indexes(database: &Database) -> Result<()> {
         .await
         .wrap_err("Failed to create sessions_last_active_ttl_idx")?;
 
+    let users = database.collection::<bson::Document>("users");
+
+    users
+        .create_index(
+            IndexModel::builder()
+                .keys(doc! { "email": 1_i32 })
+                .options(
+                    IndexOptions::builder()
+                        .name(Some("users_email_unique_idx".to_string()))
+                        .unique(true)
+                        .build(),
+                )
+                .build(),
+        )
+        .await
+        .wrap_err("Failed to create users_email_unique_idx")?;
+
+    users
+        .create_index(
+            IndexModel::builder()
+                .keys(doc! { "preferred_username": 1_i32 })
+                .options(
+                    IndexOptions::builder()
+                        .name(Some("users_preferred_username_unique_idx".to_string()))
+                        .unique(true)
+                        .build(),
+                )
+                .build(),
+        )
+        .await
+        .wrap_err("Failed to create users_preferred_username_unique_idx")?;
+
+    let applications = database.collection::<bson::Document>("applications");
+
+    applications
+        .create_index(
+            IndexModel::builder()
+                .keys(doc! { "client_id": 1_i32 })
+                .options(
+                    IndexOptions::builder()
+                        .name(Some("applications_client_id_unique_idx".to_string()))
+                        .unique(true)
+                        .build(),
+                )
+                .build(),
+        )
+        .await
+        .wrap_err("Failed to create applications_client_id_unique_idx")?;
+
+    applications
+        .create_index(
+            IndexModel::builder()
+                .keys(doc! { "slug": 1_i32 })
+                .options(
+                    IndexOptions::builder()
+                        .name(Some("applications_slug_unique_idx".to_string()))
+                        .unique(true)
+                        .build(),
+                )
+                .build(),
+        )
+        .await
+        .wrap_err("Failed to create applications_slug_unique_idx")?;
+
     Ok(())
 }
 
