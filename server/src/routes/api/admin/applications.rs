@@ -14,7 +14,7 @@ use crate::{
     },
     middlewares::require_auth::{ForbiddenError, UnauthorizedError},
     state::AppState,
-    utils::{generate_client_id, generate_client_secret},
+    utils::{generate_client_id, generate_client_secret, hash_token},
 };
 
 pub fn routes() -> OpenApiRouter<AppState> {
@@ -85,7 +85,7 @@ async fn create_application(
         icon: body.icon,
         client_type: body.client_type,
         client_id: generate_client_id(),
-        client_secret: client_secret.clone(),
+        client_secret: client_secret.as_ref().map(|s| hash_token(s)),
         redirect_uris: body.redirect_uris,
         allowed_groups: body.allowed_groups,
     };

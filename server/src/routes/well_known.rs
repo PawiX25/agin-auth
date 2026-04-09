@@ -20,7 +20,30 @@ async fn openid_configuration(Extension(state): Extension<AppState>) -> impl Int
     let issuer = state.settings.general.public_url.to_string();
     let issuer = issuer.trim_end_matches('/');
     match build_provider_metadata(issuer) {
-        Ok(metadata) => Json(metadata).into_response(),
+        Ok(metadata) => match serde_json::to_value(&metadata) {
+            Ok(mut value) => {
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert(
+                        "revocation_endpoint".to_string(),
+                        serde_json::Value::String(format!("{issuer}/api/oidc/revoke")),
+                    );
+                    obj.insert(
+                        "introspection_endpoint".to_string(),
+                        serde_json::Value::String(format!("{issuer}/api/oidc/introspect")),
+                    );
+                    obj.insert(
+                        "code_challenge_methods_supported".to_string(),
+                        serde_json::json!(["S256", "plain"]),
+                    );
+                }
+                Json(value).into_response()
+            }
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to serialize discovery document",
+            )
+                .into_response(),
+        },
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to build discovery document",
