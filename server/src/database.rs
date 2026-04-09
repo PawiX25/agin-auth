@@ -110,8 +110,10 @@ pub async fn init_session_store(
 
     let session_store = RedisStore::<Pool>::new(pool.clone());
 
+    let secure = settings.general.public_url.scheme_str() == Some("https");
+
     let session_layer = SessionManagerLayer::new(session_store)
-        .with_secure(false)
+        .with_secure(secure)
         .with_same_site(SameSite::Lax)
         .with_always_save(true)
         .with_expiry(Expiry::OnInactivity(Duration::days(7)));
