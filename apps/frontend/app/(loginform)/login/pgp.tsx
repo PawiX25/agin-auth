@@ -19,7 +19,7 @@ export function Pgp() {
     const setScreen = useSetAtom(screenAtom);
     const form = useFormContext<FormSchema>();
     const username = form.watch('username');
-    const { onSuccess } = useLoginSuccess();
+    const { onSuccess } = useLoginSuccess({ firstFactor: 'pgp', username });
 
     const [refreshSpin, setRefreshSpin] = useState(0);
 

@@ -7,43 +7,23 @@ import { Input } from '@components/ui/input';
 import { Button } from '@components/ui/button';
 import { LinkComponent } from '@components/ui/link';
 import Link from 'next/link';
-import { $api } from '@lib/providers/api';
-import { Separator } from '@components/ui/separator';
 import { useSetAtom } from 'jotai';
-import { optionsAtom } from './login-options';
+import { Separator } from '@components/ui/separator';
+import { getPreferredFirstFactor } from './first-factor';
 
 export function Welcome() {
     const setScreen = useSetAtom(screenAtom);
-    const setOptions = useSetAtom(optionsAtom);
-
     const form = useFormContext<FormSchema>();
 
-    const loginOptions = $api.useMutation('get', '/api/login/options', {
-        onSuccess: ({ options, recent_factor }) => {
-            setOptions(options);
-            if (options.length === 1) return setScreen(options[0]);
-            if (recent_factor) return setScreen(recent_factor);
-            setScreen('login-options');
-        },
-        onError: (e) => {
-            form.setError('username', {
-                message: (e as { error?: string })?.error || 'Login failed.',
-            });
-        },
-    });
+    const goToPreferredMethod = (data: FormSchema) => {
+        const preferred = getPreferredFirstFactor(data.username);
+        setScreen(preferred ?? 'login-options');
+    };
 
     return (
         <form
             className="flex flex-col items-center"
-            onSubmit={form.handleSubmit((data) =>
-                loginOptions.mutate({
-                    params: {
-                        query: {
-                            username: data.username,
-                        },
-                    },
-                })
-            )}
+            onSubmit={form.handleSubmit(goToPreferredMethod)}
         >
             <LoginIcon>
                 <IconKey />
@@ -72,7 +52,7 @@ export function Welcome() {
                         </FormItem>
                     )}
                 />
-                <Button type="submit" disabled={loginOptions.isPending}>
+                <Button type="submit">
                     Next <IconArrowRight />
                 </Button>
                 <div className="flex items-center gap-2 pointer-events-none">

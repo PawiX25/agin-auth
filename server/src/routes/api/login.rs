@@ -1,4 +1,3 @@
-mod options;
 mod password;
 mod pgp;
 mod recovery_codes;
@@ -22,7 +21,6 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .layer(middleware::from_fn(require_first_factor));
 
     let public = OpenApiRouter::new()
-        .nest("/options", options::routes())
         .nest("/password", password::routes())
         .nest("/pgp", pgp::routes())
         .nest("/webauthn/passwordless", webauthn::passwordless_routes());
