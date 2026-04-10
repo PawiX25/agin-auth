@@ -2,6 +2,7 @@ use axum::{Extension, Json};
 use axum_valid::Valid;
 use color_eyre::eyre;
 use mongodb::bson::{doc, oid::ObjectId};
+use mongodb::error::{Error as MongoError, ErrorKind, WriteFailure};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -41,7 +42,7 @@ struct RegisterBody {
     #[validate(email, length(max = 128))]
     email: String,
 
-    #[validate(length(min = 8))]
+    #[validate(length(min = 8, max = 256))]
     password: String,
 }
 
@@ -49,6 +50,14 @@ struct RegisterBody {
 #[schema(example = json!({"error": "User with this username or email already exists"}))]
 pub struct BadRequestError {
     error: String,
+}
+
+fn is_duplicate_key_error(error: &MongoError) -> bool {
+    matches!(
+        error.kind.as_ref(),
+        ErrorKind::Write(WriteFailure::WriteError(write_error))
+            if matches!(write_error.code, 11000 | 11001)
+    )
 }
 
 /// Register
@@ -109,7 +118,16 @@ async fn register(
         .database
         .collection::<User>("users")
         .insert_one(user)
-        .await?;
+        .await
+        .map_err(|error| {
+            if is_duplicate_key_error(&error) {
+                AxumError::bad_request(eyre::eyre!(
+                    "User with this username or email already exists"
+                ))
+            } else {
+                AxumError::from(error)
+            }
+        })?;
 
     // Atomically claim first-admin via a singleton sentinel document.
     // Concurrent registrations race on the upsert; only the winner promotes their user.

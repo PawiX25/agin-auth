@@ -23,9 +23,10 @@ pub fn routes() -> OpenApiRouter<AppState> {
 
 #[derive(Deserialize, ToSchema, Validate)]
 struct ChangePasswordBody {
+    #[validate(length(max = 256))]
     current_password: String,
 
-    #[validate(length(min = 8))]
+    #[validate(length(min = 8, max = 256))]
     new_password: String,
 }
 
