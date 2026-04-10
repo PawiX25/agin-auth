@@ -86,6 +86,13 @@ async fn register(
     let user_id = ObjectId::new();
     let uuid = Uuid::new_v4();
 
+    let is_first_user = state
+        .database
+        .collection::<User>("users")
+        .count_documents(doc! {})
+        .await?
+        == 0;
+
     let user = User {
         id: user_id,
         uuid,
@@ -95,7 +102,7 @@ async fn register(
         preferred_username: body.preferred_username,
         email: body.email.clone(),
         email_confirmed: false,
-        is_admin: false,
+        is_admin: is_first_user,
         auth_factors: AuthFactors {
             password: PasswordFactor {
                 password_hash: Some(hashed_password),
