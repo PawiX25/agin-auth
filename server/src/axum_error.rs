@@ -67,11 +67,21 @@ impl<E: Into<Report>> From<E> for AxumError {
 
 impl IntoResponse for AxumError {
     fn into_response(self) -> Response {
-        #[cfg(debug_assertions)]
-        error!(error = ?self.report, "An error occurred in an axum handler");
+        if self.status_code.is_server_error() {
+            error!(error = ?self.report, "An error occurred in an axum handler");
+        }
+
+        let error_message = if self.status_code.is_server_error() {
+            self.status_code
+                .canonical_reason()
+                .unwrap_or("Internal Server Error")
+                .to_string()
+        } else {
+            self.report.to_string()
+        };
 
         let body = json!({
-            "error": self.report.to_string()
+            "error": error_message
         });
         Response::builder()
             .status(self.status_code)
@@ -82,3 +92,37 @@ impl IntoResponse for AxumError {
 }
 
 pub type AxumResult<T, E = AxumError> = std::result::Result<T, E>;
+
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+    use color_eyre::eyre::eyre;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn hides_internal_details_for_server_errors() {
+        let response =
+            AxumError::new(eyre!("database connection failed: super-secret")).into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(body["error"], "Internal Server Error");
+    }
+
+    #[tokio::test]
+    async fn preserves_messages_for_client_errors() {
+        let response =
+            AxumError::bad_request(eyre!("Invalid username or password")).into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(body["error"], "Invalid username or password");
+    }
+}
