@@ -111,6 +111,29 @@ async fn register(
         .insert_one(user)
         .await?;
 
+    // Atomically claim first-admin via a singleton sentinel document.
+    // Concurrent registrations race on the upsert; only the winner promotes their user.
+    let claim_result = state
+        .database
+        .collection::<mongodb::bson::Document>("system_metadata")
+        .update_one(
+            doc! { "_id": "first_admin_claimed" },
+            doc! { "$setOnInsert": { "user_id": user_id } },
+        )
+        .upsert(true)
+        .await?;
+
+    if claim_result.upserted_id.is_some() {
+        state
+            .database
+            .collection::<User>("users")
+            .update_one(
+                doc! { "_id": user_id },
+                doc! { "$set": { "is_admin": true } },
+            )
+            .await?;
+    }
+
     if let Err(error) = send_confirmation_email(&state, user_id, &body.email).await {
         if let Err(cleanup_error) = state
             .database
