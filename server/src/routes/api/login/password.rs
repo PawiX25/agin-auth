@@ -1,11 +1,13 @@
 use axum::{Extension, Json};
 use axum_client_ip::ClientIp;
+use axum_valid::Valid;
 use color_eyre::eyre;
 use mongodb::bson::doc;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
+use validator::Validate;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
@@ -21,10 +23,11 @@ pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(login_with_password))
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema, Validate)]
 struct LoginBody {
     /// Username or email address
     username: String,
+    #[validate(length(max = 256))]
     password: String,
 }
 
@@ -50,7 +53,7 @@ async fn login_with_password(
     Extension(state): Extension<AppState>,
     session: Session,
     ClientIp(client_ip): ClientIp,
-    Json(body): Json<LoginBody>,
+    Valid(Json(body)): Valid<Json<LoginBody>>,
 ) -> AxumResult<Json<SuccessfulLoginResponse>> {
     let user = get_user(&state.database, &body.username).await?;
 

@@ -94,7 +94,7 @@ async fn request_reset(
 struct ConfirmResetBody {
     token: String,
 
-    #[validate(length(min = 8))]
+    #[validate(length(min = 8, max = 256))]
     new_password: String,
 }
 
