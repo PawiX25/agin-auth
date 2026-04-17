@@ -1,5 +1,4 @@
 use axum::{Extension, Json};
-use color_eyre::eyre;
 use entity::recovery_code;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::Serialize;
@@ -7,7 +6,7 @@ use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
-    axum_error::{AxumError, AxumResult},
+    axum_error::AxumResult,
     middlewares::require_auth::{UnauthorizedError, UserId},
     routes::api::settings::factors::recovery_codes::{
         generate_recovery_codes, hash_recovery_codes,

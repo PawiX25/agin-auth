@@ -1,9 +1,7 @@
 use axum::{Extension, Json};
 use color_eyre::eyre;
 use entity::session;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set,
-};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use tower_sessions_redis_store::fred::prelude::KeysInterface;

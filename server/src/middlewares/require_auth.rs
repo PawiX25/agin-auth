@@ -124,7 +124,7 @@ pub async fn require_admin(
     next: Next,
 ) -> AxumResult<Response> {
     use entity::user;
-    use sea_orm::{EntityTrait, prelude::*};
+    use sea_orm::EntityTrait;
 
     let user = user::Entity::find_by_id(*user_id)
         .one(&state.db)
