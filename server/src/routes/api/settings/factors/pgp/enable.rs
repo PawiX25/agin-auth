@@ -13,6 +13,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use validator::Validate;
 
 use crate::{
+    auth_method_helpers::upsert_auth_method,
     axum_error::{AxumError, AxumResult},
     middlewares::require_auth::{UnauthorizedError, UserId},
     state::AppState,
@@ -83,6 +84,8 @@ async fn enable_pgp(
         fingerprint: Set(fingerprint),
     };
     model.insert(&state.db).await?;
+
+    upsert_auth_method(&state.db, *user_id, entity::auth_method::Method::Pgp).await?;
 
     Ok(Json(EnablePgpResponse { success: true }))
 }

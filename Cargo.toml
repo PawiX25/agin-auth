@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["auth-core", "entity", "macros", "mail", "server"]
+members = ["auth-core", "entity", "macros", "mail", "migration", "server"]
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -27,7 +27,8 @@ http = "1.4.0"
 http-serde-ext = "1.0.2"
 macros = { path = "macros" }
 mail = { path = "mail" }
-sea-orm = { version = "2.0.0-rc.28", features = [
+migration = { path = "migration" }
+sea-orm = { version = "2.0.0-rc.38", features = [
     "sqlx-postgres",
     "runtime-tokio-rustls",
     "with-chrono",
@@ -35,6 +36,13 @@ sea-orm = { version = "2.0.0-rc.28", features = [
     "with-uuid",
     "schema-sync",
     "entity-registry",
+] }
+sea-orm-migration = { version = "2.0.0-rc.38", features = [
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+    "with-chrono",
+    "with-json",
+    "with-uuid",
 ] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

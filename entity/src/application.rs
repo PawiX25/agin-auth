@@ -20,9 +20,11 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
     pub name: String,
+    #[sea_orm(unique)]
     pub slug: String,
     pub icon: Option<String>,
     pub client_type: ClientType,
+    #[sea_orm(unique)]
     pub client_id: String,
     pub client_secret: Option<String>,
     pub redirect_uris: Vec<String>,

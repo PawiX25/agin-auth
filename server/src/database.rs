@@ -1,6 +1,7 @@
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result};
 use entity::session;
+use migration::{Migrator, MigratorTrait};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, ConnectOptions, Database, DatabaseConnection,
     EntityTrait, IntoActiveModel, QueryFilter, Set,
@@ -27,6 +28,10 @@ pub async fn init_database(settings: &Settings) -> Result<DatabaseConnection> {
         .await
         .wrap_err("failed to connect to PostgreSQL")?;
 
+    Migrator::up(&db, None)
+        .await
+        .wrap_err("Failed to run database migrations")?;
+
     Ok(db)
 }
 
@@ -52,7 +57,7 @@ pub async fn init_session_store(
     Ok((session_layer, pool))
 }
 
-fn session_public_id(session_id: &str) -> uuid::Uuid {
+pub(crate) fn session_public_id(session_id: &str) -> uuid::Uuid {
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&Sha256::digest(session_id.as_bytes())[..16]);
     uuid::Uuid::from_bytes(bytes)
@@ -122,12 +127,11 @@ pub async fn invalidate_user_sessions(
 
     let records = query.all(db).await.wrap_err("Failed to query sessions")?;
 
-    for record in &records {
-        let _: i64 = redis_pool.del(&record.session_key).await.unwrap_or(0);
-    }
+    if !records.is_empty() {
+        let keys: Vec<&str> = records.iter().map(|r| r.session_key.as_str()).collect();
+        let _: i64 = redis_pool.del(keys).await.unwrap_or(0);
 
-    let ids: Vec<i32> = records.iter().map(|r| r.id).collect();
-    if !ids.is_empty() {
+        let ids: Vec<i32> = records.iter().map(|r| r.id).collect();
         session::Entity::delete_many()
             .filter(session::Column::Id.is_in(ids))
             .exec(db)

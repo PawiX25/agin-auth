@@ -39,7 +39,7 @@ async fn logout(
 
     if let Some(session_id) = session_id {
         if let Err(error) = session::Entity::delete_many()
-            .filter(session::Column::PublicId.eq(session_id))
+            .filter(session::Column::SessionKey.eq(session_id))
             .exec(&state.db)
             .await
         {

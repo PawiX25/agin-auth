@@ -8,6 +8,7 @@ use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
+    auth_method_helpers::upsert_auth_method,
     axum_error::{AxumError, AxumResult},
     middlewares::require_auth::{UnauthorizedError, UserId},
     routes::api::settings::factors::totp::{TotpCodeBody, verify_totp},
@@ -67,6 +68,8 @@ async fn confirm_enabling_totp(
     let mut model: totp::ActiveModel = totp_record.into();
     model.fully_enabled = Set(true);
     model.update(&state.db).await?;
+
+    upsert_auth_method(&state.db, *user_id, entity::auth_method::Method::Totp).await?;
 
     Ok(Json(ConfirmTotpResponse { success: true }))
 }

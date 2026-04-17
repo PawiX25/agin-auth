@@ -26,6 +26,7 @@ http-serde-ext.workspace = true
 jsonwebtoken = "9.3.1"
 macros.workspace = true
 mail.workspace = true
+migration.workspace = true
 openidconnect = "4.0.0"
 paste = "1.0.15"
 pgp_lib = { package = "pgp", version = "0.19.0" }

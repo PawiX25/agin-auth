@@ -15,6 +15,7 @@ use validator::Validate;
 use crate::{
     axum_error::{AxumError, AxumResult},
     routes::api::CreateSuccess,
+    routes::api::confirm_email::send_confirmation_email,
     state::AppState,
     utils::{hash_password, is_unique_violation},
     validators::username_validator,
@@ -98,6 +99,8 @@ async fn register(
         email: Set(body.email),
         email_confirmed: Set(false),
         is_admin: Set(is_first_user),
+        groups: Set(vec![]),
+        created_at: Set(chrono::Utc::now()),
         ..Default::default()
     };
 
@@ -132,7 +135,13 @@ async fn register(
 
     txn.commit().await?;
 
-    // TODO: send confirmation email
+    if let Err(e) = send_confirmation_email(&state, user.id, &user.email).await {
+        tracing::warn!(
+            error = ?e,
+            user_id = user.id,
+            "Registration succeeded but confirmation email could not be sent"
+        );
+    }
 
     Ok(Json(CreateSuccess {
         success: true,

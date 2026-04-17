@@ -6,6 +6,7 @@ use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
+    auth_method_helpers::upsert_auth_method,
     axum_error::AxumResult,
     middlewares::require_auth::{UnauthorizedError, UserId},
     routes::api::settings::factors::recovery_codes::{
@@ -59,6 +60,13 @@ async fn enable_recovery_codes(
         };
         model.insert(&state.db).await?;
     }
+
+    upsert_auth_method(
+        &state.db,
+        *user_id,
+        entity::auth_method::Method::RecoveryCodes,
+    )
+    .await?;
 
     Ok(Json(EnableRecoveryCodesResponse { codes }))
 }

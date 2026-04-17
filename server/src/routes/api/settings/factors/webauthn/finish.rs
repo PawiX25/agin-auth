@@ -1,8 +1,8 @@
 use axum::{Extension, Json};
 use base64::Engine;
 use color_eyre::eyre::{self, Context, ContextCompat};
-use entity::{auth_method, webauthn as webauthn_entity};
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use entity::webauthn as webauthn_entity;
+use sea_orm::{ActiveModelTrait, Set};
 use serde::Serialize;
 use tower_sessions::Session;
 use utoipa::ToSchema;
@@ -10,6 +10,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use webauthn_rs::prelude::*;
 
 use crate::{
+    auth_method_helpers::upsert_auth_method,
     axum_error::{AxumError, AxumResult},
     middlewares::require_auth::{UnauthorizedError, UserId},
     state::AppState,
@@ -71,24 +72,7 @@ async fn webauthn_finish_setup(
     };
     model.insert(&state.db).await?;
 
-    // Upsert auth_method record for WebAuthn
-    let now = chrono::Utc::now();
-    let existing_method = auth_method::Entity::find()
-        .filter(auth_method::Column::UserId.eq(*user_id))
-        .filter(auth_method::Column::MethodType.eq(auth_method::Method::WebAuthn))
-        .one(&state.db)
-        .await?;
-    if existing_method.is_none() {
-        let am = auth_method::ActiveModel {
-            user_id: Set(*user_id),
-            method_type: Set(auth_method::Method::WebAuthn),
-            is_enabled: Set(true),
-            enrolled_at: Set(now),
-            modified_at: Set(now),
-            last_used_at: Set(None),
-        };
-        am.insert(&state.db).await?;
-    }
+    upsert_auth_method(&state.db, *user_id, entity::auth_method::Method::WebAuthn).await?;
 
     Ok(Json(WebAuthnFinishSuccess { success: true }))
 }
