@@ -6,12 +6,12 @@ use argon2::{
     password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
 };
 use color_eyre::eyre::{self, Context, Result};
+use entity::recovery_code;
 use rand::{RngExt, distr::Alphanumeric};
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::RecoveryCodeFactor,
     state::AppState,
 };
 
@@ -57,23 +57,23 @@ pub fn hash_recovery_codes(codes: Vec<String>) -> AxumResult<Vec<String>> {
     Ok(hashes)
 }
 
-pub fn verify_recovery_code(code: String, hashes: Vec<RecoveryCodeFactor>) -> AxumResult<String> {
+pub fn verify_recovery_code(code: String, codes: Vec<recovery_code::Model>) -> AxumResult<String> {
     let argon2 = Argon2::default();
 
-    for hash in hashes {
-        let parsed_hash = PasswordHash::new(&hash.code_hash)
-            .map_err(|_| eyre::eyre!("Failed to compute hash"))?;
+    for rc in codes {
+        let parsed_hash =
+            PasswordHash::new(&rc.code_hash).map_err(|_| eyre::eyre!("Failed to compute hash"))?;
 
         if argon2
             .verify_password(code.as_bytes(), &parsed_hash)
             .is_ok()
         {
-            if hash.used {
+            if rc.used {
                 return Err(AxumError::unauthorized(eyre::eyre!(
                     "Recovery code already used"
                 )));
             }
-            return Ok(hash.code_hash);
+            return Ok(rc.code_hash);
         }
     }
 

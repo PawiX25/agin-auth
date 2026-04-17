@@ -1,14 +1,14 @@
 use axum::{Extension, Json};
 use axum_valid::Valid;
-use color_eyre::eyre::{self, ContextCompat};
-use mongodb::bson::doc;
+use color_eyre::eyre;
+use entity::totp;
+use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 use serde::Serialize;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::{User, get_user_by_id},
     middlewares::require_auth::{UnauthorizedError, UserId},
     routes::api::settings::factors::totp::{TotpCodeBody, verify_totp},
     state::AppState,
@@ -51,44 +51,22 @@ async fn confirm_enabling_totp(
     Extension(user_id): Extension<UserId>,
     Valid(Json(body)): Valid<Json<TotpCodeBody>>,
 ) -> AxumResult<Json<ConfirmTotpResponse>> {
-    let user = get_user_by_id(&state.database, &user_id)
+    let totp_record = totp::Entity::find_by_id(*user_id)
+        .one(&state.db)
         .await?
-        .wrap_err("User not found")?;
+        .ok_or_else(|| AxumError::forbidden(eyre::eyre!("TOTP secret is not yet generated")))?;
 
-    let already_enabled = user
-        .clone()
-        .auth_factors
-        .totp
-        .is_some_and(|totp| totp.fully_enabled);
-
-    if already_enabled {
+    if totp_record.fully_enabled {
         return Err(AxumError::forbidden(eyre::eyre!(
             "TOTP is already enabled. To rotate your TOTP secret, disable it first and then enable it again."
         )));
     }
 
-    let secret = user
-        .auth_factors
-        .totp
-        .ok_or(AxumError::forbidden(eyre::eyre!(
-            "TOTP secret is not yet generated"
-        )))?
-        .secret;
+    verify_totp(&totp_record.secret, &body.code)?;
 
-    verify_totp(&secret, &body.code)?;
-
-    state
-        .database
-        .collection::<User>("users")
-        .find_one_and_update(
-            doc! { "_id": *user_id },
-            doc! {
-                "$set": {
-                    "auth_factors.totp.fully_enabled": true,
-                }
-            },
-        )
-        .await?;
+    let mut model: totp::ActiveModel = totp_record.into();
+    model.fully_enabled = Set(true);
+    model.update(&state.db).await?;
 
     Ok(Json(ConfirmTotpResponse { success: true }))
 }

@@ -4,7 +4,8 @@ use axum::{Extension, Json};
 use axum_valid::Valid;
 use base32::{Alphabet, encode};
 use color_eyre::eyre::{self, ContextCompat};
-use mongodb::bson::doc;
+use entity::{totp, user};
+use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 use serde::{Deserialize, Serialize};
 use totp_rs::Secret;
 use utoipa::ToSchema;
@@ -13,7 +14,6 @@ use validator::Validate;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::{User, get_user_by_id},
     middlewares::require_auth::{UnauthorizedError, UserId},
     routes::api::settings::factors::totp::create_totp_instance,
     state::AppState,
@@ -67,16 +67,9 @@ async fn enable_totp(
     Extension(user_id): Extension<UserId>,
     Valid(Json(body)): Valid<Json<EnableTotpBody>>,
 ) -> AxumResult<Json<EnableTotpResponse>> {
-    let user = get_user_by_id(&state.database, &user_id)
-        .await?
-        .wrap_err("User not found")?;
+    let existing = totp::Entity::find_by_id(*user_id).one(&state.db).await?;
 
-    let already_enabled = user
-        .auth_factors
-        .totp
-        .is_some_and(|totp| totp.fully_enabled);
-
-    if already_enabled {
+    if existing.as_ref().is_some_and(|t| t.fully_enabled) {
         return Err(AxumError::forbidden(eyre::eyre!(
             "TOTP is already enabled. To rotate your TOTP secret, disable it first and then enable it again."
         )));
@@ -85,30 +78,35 @@ async fn enable_totp(
     let raw_secret = Secret::generate_secret().to_bytes()?;
     let encoded_secret = encode(Alphabet::Rfc4648 { padding: false }, &raw_secret);
 
-    state
-        .database
-        .collection::<User>("users")
-        .find_one_and_update(
-            doc! { "_id": *user_id },
-            doc! {
-                "$set": {
-                    "auth_factors.totp": {
-                        "secret": &encoded_secret,
-                        "display_name": body.display_name,
-                        "fully_enabled": false,
-                    }
-                }
-            },
-        )
-        .await?;
+    if let Some(old) = existing {
+        // Update existing (not yet confirmed) TOTP record
+        let mut model: totp::ActiveModel = old.into();
+        model.secret = Set(encoded_secret.clone());
+        model.display_name = Set(body.display_name);
+        model.fully_enabled = Set(false);
+        model.update(&state.db).await?;
+    } else {
+        let model = totp::ActiveModel {
+            user_id: Set(*user_id),
+            display_name: Set(body.display_name),
+            secret: Set(encoded_secret.clone()),
+            fully_enabled: Set(false),
+        };
+        model.insert(&state.db).await?;
+    }
 
-    let totp = create_totp_instance(
+    let user = user::Entity::find_by_id(*user_id)
+        .one(&state.db)
+        .await?
+        .wrap_err("User not found")?;
+
+    let totp_instance = create_totp_instance(
         &encoded_secret,
         Some(user.email),
         Some("Agin Auth".to_string()),
     )?;
 
-    let qr = totp.get_url();
+    let qr = totp_instance.get_url();
 
     Ok(Json(EnableTotpResponse {
         secret: encoded_secret,

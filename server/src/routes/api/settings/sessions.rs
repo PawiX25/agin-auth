@@ -1,7 +1,9 @@
 use axum::{Extension, Json};
 use color_eyre::eyre;
-use futures::TryStreamExt;
-use mongodb::bson::doc;
+use entity::session;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set,
+};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use tower_sessions_redis_store::fred::prelude::KeysInterface;
@@ -12,7 +14,6 @@ use uuid::Uuid;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::SessionRecord,
     middlewares::require_auth::UserId,
     state::AppState,
 };
@@ -38,46 +39,6 @@ struct SessionsResponse {
     sessions: Vec<SessionItem>,
 }
 
-async fn ensure_public_session_id(
-    state: &AppState,
-    session_key: &str,
-    public_id: Option<String>,
-) -> AxumResult<String> {
-    if let Some(public_id) = public_id {
-        return Ok(public_id);
-    }
-
-    let public_id = Uuid::new_v4().to_string();
-    let update_result = state
-        .database
-        .collection::<SessionRecord>("sessions")
-        .update_one(
-            doc! {
-                "_id": session_key,
-                "public_id": { "$exists": false },
-            },
-            doc! {
-                "$set": {
-                    "public_id": &public_id,
-                }
-            },
-        )
-        .await?;
-
-    if update_result.modified_count == 0 {
-        let record = state
-            .database
-            .collection::<SessionRecord>("sessions")
-            .find_one(doc! { "_id": session_key })
-            .await?;
-        if let Some(public_id) = record.and_then(|record| record.public_id) {
-            return Ok(public_id);
-        }
-    }
-
-    Ok(public_id)
-}
-
 /// List active sessions
 ///
 /// Returns all active sessions for the current user.
@@ -94,55 +55,49 @@ async fn list_sessions(
     Extension(user_id): Extension<UserId>,
     session: Session,
 ) -> AxumResult<Json<SessionsResponse>> {
-    let current_session_id = session.id().map(|id| id.to_string()).unwrap_or_default();
+    let current_session_key = session.id().map(|id| id.to_string()).unwrap_or_default();
 
-    let mut cursor = state
-        .database
-        .collection::<SessionRecord>("sessions")
-        .find(doc! { "user_id": *user_id })
-        .sort(doc! { "last_active": -1_i32 })
+    let records = session::Entity::find()
+        .filter(session::Column::UserId.eq(*user_id))
+        .order_by_desc(session::Column::LastActive)
+        .all(&state.db)
         .await?;
 
     let mut sessions = Vec::new();
-    let mut stale_session_keys = Vec::new();
-    while let Some(record) = cursor.try_next().await? {
-        let exists: i64 = state.redis_pool.exists(&record.id).await.map_err(|error| {
-            AxumError::new(eyre::eyre!("Failed to validate session state: {}", error))
-        })?;
+    let mut stale_ids = Vec::new();
+
+    for record in records {
+        let exists: i64 = state
+            .redis_pool
+            .exists(&record.session_key)
+            .await
+            .map_err(|error| {
+                AxumError::new(eyre::eyre!("Failed to validate session state: {}", error))
+            })?;
 
         if exists == 0 {
-            stale_session_keys.push(record.id);
+            stale_ids.push(record.id);
             continue;
         }
 
-        let public_id = ensure_public_session_id(&state, &record.id, record.public_id).await?;
+        let is_current = record.session_key == current_session_key;
         sessions.push(SessionItem {
-            id: public_id,
-            ip_address: record.ip_address,
-            user_agent: record.user_agent,
-            created_at: record
-                .created_at
-                .try_to_rfc3339_string()
-                .unwrap_or_default(),
-            last_active: record
-                .last_active
-                .try_to_rfc3339_string()
-                .unwrap_or_default(),
-            current: record.id == current_session_id,
+            id: record.public_id.to_string(),
+            ip_address: record.ip_address.unwrap_or_default(),
+            user_agent: record.user_agent.unwrap_or_default(),
+            created_at: record.created_at.to_rfc3339(),
+            last_active: record.last_active.to_rfc3339(),
+            current: is_current,
         });
     }
 
-    if !stale_session_keys.is_empty() {
-        state
-            .database
-            .collection::<SessionRecord>("sessions")
-            .delete_many(doc! {
-                "_id": { "$in": stale_session_keys }
-            })
+    if !stale_ids.is_empty() {
+        session::Entity::delete_many()
+            .filter(session::Column::Id.is_in(stale_ids))
+            .exec(&state.db)
             .await?;
     }
 
-    // Sort: current session first, then by last_active desc
     sessions.sort_by(|a, b| {
         b.current
             .cmp(&a.current)
@@ -188,18 +143,21 @@ async fn delete_session(
     session: Session,
     axum::extract::Path(path): axum::extract::Path<DeleteSessionPath>,
 ) -> AxumResult<Json<DeleteSessionResponse>> {
-    let current_session_id = session.id().map(|id| id.to_string()).unwrap_or_default();
-    let record = state
-        .database
-        .collection::<SessionRecord>("sessions")
-        .find_one(doc! {
-            "public_id": &path.session_id,
-            "user_id": *user_id,
-        })
+    let current_session_key = session.id().map(|id| id.to_string()).unwrap_or_default();
+
+    let public_uuid = path
+        .session_id
+        .parse::<Uuid>()
+        .map_err(|_| AxumError::not_found(eyre::eyre!("Session not found")))?;
+
+    let record = session::Entity::find()
+        .filter(session::Column::PublicId.eq(public_uuid))
+        .filter(session::Column::UserId.eq(*user_id))
+        .one(&state.db)
         .await?
         .ok_or_else(|| AxumError::not_found(eyre::eyre!("Session not found")))?;
 
-    if record.id == current_session_id {
+    if record.session_key == current_session_key {
         return Err(AxumError::bad_request(eyre::eyre!(
             "Cannot revoke the current session. Use logout instead."
         )));
@@ -207,14 +165,12 @@ async fn delete_session(
 
     let _: i64 = state
         .redis_pool
-        .del(&record.id)
+        .del(&record.session_key)
         .await
         .map_err(|e| AxumError::new(eyre::eyre!("Failed to invalidate session: {}", e)))?;
 
-    if let Err(error) = state
-        .database
-        .collection::<SessionRecord>("sessions")
-        .delete_one(doc! { "_id": &record.id })
+    if let Err(error) = session::Entity::delete_by_id(record.id)
+        .exec(&state.db)
         .await
     {
         warn!(

@@ -7,7 +7,7 @@ mod login;
 mod logout;
 // mod password_reset;
 mod register;
-// mod settings;
+mod settings;
 
 use axum::middleware;
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,7 @@ use crate::{middlewares::require_auth::require_auth, state::AppState};
 pub fn routes() -> OpenApiRouter<AppState> {
     let auth = OpenApiRouter::new()
         .nest("/logout", logout::routes())
+        .nest("/settings", settings::routes())
         .layer(middleware::from_fn(require_auth));
 
     let public = OpenApiRouter::new()

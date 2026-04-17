@@ -2,8 +2,8 @@ use color_eyre::eyre::{Context, Result};
 use chrono::Utc;
 use entity::session;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectOptions, Database, DatabaseConnection, EntityTrait,
-    IntoActiveModel, QueryFilter, Set,
+    ActiveModelTrait, ColumnTrait, Condition, ConnectOptions, Database, DatabaseConnection,
+    EntityTrait, IntoActiveModel, QueryFilter, Set,
 };
 use sha2::{Digest, Sha256};
 use tower_sessions::{
@@ -68,13 +68,18 @@ pub async fn record_session(
     let public_id = session_public_id(session_id);
 
     if let Some(existing) = session::Entity::find()
-        .filter(session::Column::PublicId.eq(public_id))
+        .filter(
+            Condition::any()
+                .add(session::Column::SessionKey.eq(session_id.to_owned()))
+                .add(session::Column::PublicId.eq(public_id)),
+        )
         .one(db)
         .await
         .wrap_err("Failed to query session record")?
     {
         let mut model = existing.into_active_model();
         model.user_id = Set(user_id);
+        model.session_key = Set(session_id.to_owned());
         model.ip_address = Set(Some(ip_address.to_owned()));
         model.user_agent = Set(Some(user_agent.to_owned()));
         model.last_active = Set(Utc::now());
@@ -86,6 +91,7 @@ pub async fn record_session(
         let now = Utc::now();
         let model = session::ActiveModel {
             user_id: Set(user_id),
+            session_key: Set(session_id.to_owned()),
             public_id: Set(public_id),
             ip_address: Set(Some(ip_address.to_owned())),
             user_agent: Set(Some(user_agent.to_owned())),

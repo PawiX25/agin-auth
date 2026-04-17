@@ -1,13 +1,13 @@
 use axum::{Extension, Json};
-use color_eyre::eyre::{self, ContextCompat};
-use mongodb::bson::doc;
+use color_eyre::eyre;
+use entity::{recovery_code, user};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
 use serde::Serialize;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::{RecoveryCodeFactor, User, get_user_by_id},
     middlewares::require_auth::{UnauthorizedError, UserId},
     routes::api::settings::factors::recovery_codes::{
         generate_recovery_codes, hash_recovery_codes,
@@ -42,11 +42,12 @@ async fn reset_recovery_codes(
     Extension(state): Extension<AppState>,
     Extension(user_id): Extension<UserId>,
 ) -> AxumResult<Json<ResetRecoveryCodesResponse>> {
-    let user = get_user_by_id(&state.database, &user_id)
-        .await?
-        .wrap_err("User not found")?;
+    let existing_count = recovery_code::Entity::find()
+        .filter(recovery_code::Column::UserId.eq(*user_id))
+        .count(&state.db)
+        .await?;
 
-    if user.auth_factors.recovery_codes.is_empty() {
+    if existing_count == 0 {
         return Err(AxumError::bad_request(eyre::eyre!(
             "Recovery codes are not enabled"
         )));
@@ -55,34 +56,37 @@ async fn reset_recovery_codes(
     let codes = generate_recovery_codes(10, 12);
     let hashed_codes = hash_recovery_codes(codes.clone())?;
 
-    let db_codes = hashed_codes
-        .iter()
-        .map(|code| RecoveryCodeFactor {
-            code_hash: code.clone(),
-            used: false,
-        })
-        .collect::<Vec<_>>();
-
-    state
-        .database
-        .collection::<User>("users")
-        .update_one(
-            doc! { "_id": *user_id },
-            doc! { "$set": { "auth_factors.recovery_codes": db_codes } },
-        )
+    // Delete old codes
+    recovery_code::Entity::delete_many()
+        .filter(recovery_code::Column::UserId.eq(*user_id))
+        .exec(&state.db)
         .await?;
 
+    // Insert new codes
+    for hash in &hashed_codes {
+        let model = recovery_code::ActiveModel {
+            id: Default::default(),
+            user_id: Set(*user_id),
+            code_hash: Set(hash.clone()),
+            used: Set(false),
+        };
+        model.insert(&state.db).await?;
+    }
+
     if let Some(mail) = &state.mail_service {
-        let email = user.email.clone();
-        let mail = mail.clone();
-        tokio::spawn(async move {
-            if let Err(e) = mail
-                .send_factor_added(&email, "recovery codes (regenerated)")
-                .await
-            {
-                tracing::warn!(error = ?e, "Failed to send factor notification");
-            }
-        });
+        let user = user::Entity::find_by_id(*user_id).one(&state.db).await?;
+        if let Some(user) = user {
+            let email = user.email;
+            let mail = mail.clone();
+            tokio::spawn(async move {
+                if let Err(e) = mail
+                    .send_factor_added(&email, "recovery codes (regenerated)")
+                    .await
+                {
+                    tracing::warn!(error = ?e, "Failed to send factor notification");
+                }
+            });
+        }
     }
 
     Ok(Json(ResetRecoveryCodesResponse { codes }))

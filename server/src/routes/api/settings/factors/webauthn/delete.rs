@@ -1,13 +1,13 @@
 use axum::{Extension, Json, extract::Path};
 use color_eyre::eyre;
-use mongodb::bson::doc;
+use entity::{user, webauthn as webauthn_entity};
+use sea_orm::{ColumnTrait, EntityTrait, ModelTrait, QueryFilter};
 use serde::Serialize;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::{User, get_user_by_id},
     middlewares::require_auth::{UnauthorizedError, UserId},
     state::AppState,
 };
@@ -43,21 +43,17 @@ async fn delete_webauthn(
     Extension(user_id): Extension<UserId>,
     Path(credential_id): Path<String>,
 ) -> AxumResult<Json<DeleteWebAuthnResponse>> {
-    let result = state
-        .database
-        .collection::<User>("users")
-        .update_one(
-            doc! { "_id": *user_id, "auth_factors.webauthn.credential_id": &credential_id },
-            doc! { "$pull": { "auth_factors.webauthn": { "credential_id": &credential_id } } },
-        )
-        .await?;
+    let key = webauthn_entity::Entity::find()
+        .filter(webauthn_entity::Column::UserId.eq(*user_id))
+        .filter(webauthn_entity::Column::CredentialId.eq(&credential_id))
+        .one(&state.db)
+        .await?
+        .ok_or_else(|| AxumError::not_found(eyre::eyre!("WebAuthn key not found")))?;
 
-    if result.matched_count == 0 {
-        return Err(AxumError::not_found(eyre::eyre!("WebAuthn key not found")));
-    }
+    key.delete(&state.db).await?;
 
     if let Some(mail) = &state.mail_service {
-        let user = get_user_by_id(&state.database, &user_id).await?;
+        let user = user::Entity::find_by_id(*user_id).one(&state.db).await?;
         if let Some(user) = user {
             let email = user.email;
             let mail = mail.clone();

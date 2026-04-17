@@ -1,13 +1,13 @@
 use axum::{Extension, Json};
-use color_eyre::eyre::{self, ContextCompat};
-use mongodb::bson::doc;
+use color_eyre::eyre;
+use entity::{pgp, user};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use serde::Serialize;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::{User, get_user_by_id},
     middlewares::require_auth::{UnauthorizedError, UserId},
     state::AppState,
 };
@@ -39,31 +39,31 @@ async fn disable_pgp(
     Extension(state): Extension<AppState>,
     Extension(user_id): Extension<UserId>,
 ) -> AxumResult<Json<DisablePgpResponse>> {
-    let user = get_user_by_id(&state.database, &user_id)
-        .await?
-        .wrap_err("User not found")?;
+    let count = pgp::Entity::find()
+        .filter(pgp::Column::UserId.eq(*user_id))
+        .count(&state.db)
+        .await?;
 
-    if user.auth_factors.pgp.is_empty() {
+    if count == 0 {
         return Err(AxumError::bad_request(eyre::eyre!("PGP is not enabled")));
     }
 
-    state
-        .database
-        .collection::<User>("users")
-        .update_one(
-            doc! { "_id": *user_id },
-            doc! { "$set": { "auth_factors.pgp": [] } },
-        )
+    pgp::Entity::delete_many()
+        .filter(pgp::Column::UserId.eq(*user_id))
+        .exec(&state.db)
         .await?;
 
     if let Some(mail) = &state.mail_service {
-        let email = user.email.clone();
-        let mail = mail.clone();
-        tokio::spawn(async move {
-            if let Err(e) = mail.send_factor_removed(&email, "PGP key").await {
-                tracing::warn!(error = ?e, "Failed to send factor removed notification");
-            }
-        });
+        let user = user::Entity::find_by_id(*user_id).one(&state.db).await?;
+        if let Some(user) = user {
+            let email = user.email;
+            let mail = mail.clone();
+            tokio::spawn(async move {
+                if let Err(e) = mail.send_factor_removed(&email, "PGP key").await {
+                    tracing::warn!(error = ?e, "Failed to send factor removed notification");
+                }
+            });
+        }
     }
 
     Ok(Json(DisablePgpResponse { success: true }))

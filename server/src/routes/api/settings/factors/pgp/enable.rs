@@ -1,11 +1,12 @@
 use axum::{Extension, Json};
 use axum_valid::Valid;
 use color_eyre::eyre;
-use mongodb::bson::doc;
-use pgp::{
+use entity::pgp;
+use pgp_lib::{
     composed::{ArmorOptions, Deserializable, SignedPublicKey},
     types::KeyDetails,
 };
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -13,7 +14,6 @@ use validator::Validate;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::{PGPFactor, User, get_user_by_id},
     middlewares::require_auth::{UnauthorizedError, UserId},
     state::AppState,
 };
@@ -24,11 +24,11 @@ pub fn routes() -> OpenApiRouter<AppState> {
 
 #[derive(Deserialize, ToSchema, Validate)]
 pub struct EnablePgpBody {
-    /// The display name for the TOTP factor (for example authenticator app name).
+    /// The display name for the PGP factor.
     #[validate(length(min = 1, max = 32))]
     pub display_name: String,
 
-    // The public key
+    /// The public key
     #[validate(length(min = 1))]
     pub public_key: String,
 }
@@ -63,39 +63,26 @@ async fn enable_pgp(
     let fingerprint = public_key.fingerprint().to_string();
 
     // Check for duplicate fingerprint
-    let user = get_user_by_id(&state.database, &user_id)
-        .await?
-        .ok_or_else(|| AxumError::unauthorized(eyre::eyre!("User not found")))?;
+    let existing = pgp::Entity::find()
+        .filter(pgp::Column::UserId.eq(*user_id))
+        .filter(pgp::Column::Fingerprint.eq(&fingerprint))
+        .one(&state.db)
+        .await?;
 
-    if user
-        .auth_factors
-        .pgp
-        .iter()
-        .any(|k| k.fingerprint == fingerprint)
-    {
+    if existing.is_some() {
         return Err(AxumError::bad_request(eyre::eyre!(
             "This PGP key is already added"
         )));
     }
 
-    let factor = PGPFactor {
-        public_key: public_key.to_armored_string(ArmorOptions::default())?,
-        fingerprint,
-        display_name: body.display_name,
+    let model = pgp::ActiveModel {
+        id: Default::default(),
+        user_id: Set(*user_id),
+        display_name: Set(body.display_name),
+        public_key: Set(public_key.to_armored_string(ArmorOptions::default())?),
+        fingerprint: Set(fingerprint),
     };
-
-    state
-        .database
-        .collection::<User>("users")
-        .update_one(
-            doc! { "_id": *user_id },
-            doc! {
-                "$push": {
-                    "auth_factors.pgp": mongodb::bson::to_bson(&factor)?
-                }
-            },
-        )
-        .await?;
+    model.insert(&state.db).await?;
 
     Ok(Json(EnablePgpResponse { success: true }))
 }

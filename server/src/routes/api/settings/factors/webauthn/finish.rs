@@ -1,7 +1,8 @@
 use axum::{Extension, Json};
 use base64::Engine;
 use color_eyre::eyre::{self, Context, ContextCompat};
-use mongodb::bson::doc;
+use entity::webauthn as webauthn_entity;
+use sea_orm::{ActiveModelTrait, Set};
 use serde::Serialize;
 use tower_sessions::Session;
 use utoipa::ToSchema;
@@ -10,7 +11,6 @@ use webauthn_rs::prelude::*;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::User,
     middlewares::require_auth::{UnauthorizedError, UserId},
     state::AppState,
 };
@@ -62,22 +62,14 @@ async fn webauthn_finish_setup(
     let credential_id =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sk.cred_id().as_ref());
 
-    state
-        .database
-        .collection::<User>("users")
-        .find_one_and_update(
-            doc! { "_id": *user_id },
-            doc! {
-                "$push": {
-                    "auth_factors.webauthn": {
-                        "credential_id": credential_id,
-                        "serialized_key": serialized_key,
-                        "display_name": display_name,
-                    }
-                }
-            },
-        )
-        .await?;
+    let model = webauthn_entity::ActiveModel {
+        id: Default::default(),
+        user_id: Set(*user_id),
+        credential_id: Set(credential_id),
+        display_name: Set(display_name),
+        serialized_key: Set(serialized_key),
+    };
+    model.insert(&state.db).await?;
 
     Ok(Json(WebAuthnFinishSuccess { success: true }))
 }

@@ -1,6 +1,8 @@
 use axum::{Extension, Json};
 use base64urlsafedata::HumanBinaryData;
 use color_eyre::eyre::{Context, ContextCompat, Result};
+use entity::{user, webauthn as webauthn_entity};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Deserialize;
 use tower_sessions::Session;
 use utoipa::ToSchema;
@@ -10,7 +12,6 @@ use webauthn_rs::prelude::{CreationChallengeResponse, CredentialID, Passkey};
 
 use crate::{
     axum_error::AxumResult,
-    database::get_user_by_id,
     middlewares::require_auth::{UnauthorizedError, UserId},
     state::AppState,
 };
@@ -44,15 +45,19 @@ async fn webauthn_start_setup(
     session: Session,
     Json(body): Json<WebAuthnRegistrationBody>,
 ) -> AxumResult<Json<CreationChallengeResponse>> {
-    let user = get_user_by_id(&state.database, &user_id)
+    let user = user::Entity::find_by_id(*user_id)
+        .one(&state.db)
         .await?
         .wrap_err("User not found")?;
 
     session.remove_value("reg_state").await?;
 
-    let exclude_credentials = user
-        .auth_factors
-        .webauthn
+    let existing_keys = webauthn_entity::Entity::find()
+        .filter(webauthn_entity::Column::UserId.eq(*user_id))
+        .all(&state.db)
+        .await?;
+
+    let exclude_credentials = existing_keys
         .iter()
         .map(|f| -> Result<CredentialID> {
             let passkey: Passkey = serde_json::from_str(&f.serialized_key)?;
