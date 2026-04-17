@@ -1,8 +1,11 @@
 use axum::{Extension, Json};
 use axum_valid::Valid;
 use color_eyre::eyre;
-use mongodb::bson::{doc, oid::ObjectId};
-use mongodb::error::{Error as MongoError, ErrorKind, WriteFailure};
+use entity::{auth_method, password, user};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, PaginatorTrait,
+    QueryFilter, Set, TransactionTrait, prelude::*,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -11,13 +14,9 @@ use validator::Validate;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::{AuthFactors, PasswordFactor, User},
-    routes::api::{
-        CreateSuccess,
-        confirm_email::{EmailConfirmationToken, send_confirmation_email},
-    },
+    routes::api::CreateSuccess,
     state::AppState,
-    utils::hash_password,
+    utils::{hash_password, is_unique_violation},
     validators::username_validator,
 };
 
@@ -52,12 +51,16 @@ pub struct BadRequestError {
     error: String,
 }
 
-fn is_duplicate_key_error(error: &MongoError) -> bool {
-    matches!(
-        error.kind.as_ref(),
-        ErrorKind::Write(WriteFailure::WriteError(write_error))
-            if matches!(write_error.code, 11000 | 11001)
-    )
+async fn user_exists(db: &DatabaseConnection, username: &str, email: &str) -> Result<bool, DbErr> {
+    let count = user::Entity::find()
+        .filter(
+            Condition::any()
+                .add(user::Column::PreferredUsername.eq(username))
+                .add(user::Column::Email.eq(email)),
+        )
+        .count(db)
+        .await?;
+    Ok(count > 0)
 }
 
 /// Register
@@ -74,100 +77,65 @@ async fn register(
     Extension(state): Extension<AppState>,
     Valid(Json(body)): Valid<Json<RegisterBody>>,
 ) -> AxumResult<Json<CreateSuccess>> {
-    let already_exists = state
-        .database
-        .collection::<User>("users")
-        .find_one(doc! {
-            "$or": [
-                { "preferred_username": &body.preferred_username },
-                { "email": &body.email }
-            ]
-        })
-        .await?;
-
-    if already_exists.is_some() {
+    if user_exists(&state.db, &body.preferred_username, &body.email).await? {
         return Err(AxumError::bad_request(eyre::eyre!(
             "User with this username or email already exists"
         )));
     }
 
     let hashed_password = hash_password(&body.password)?;
-    let user_id = ObjectId::new();
-    let uuid = Uuid::new_v4();
 
-    let is_first_user = state
-        .database
-        .collection::<User>("users")
-        .count_documents(doc! {})
-        .await?
-        == 0;
+    let is_first_user = user::Entity::find().count(&state.db).await? == 0;
 
-    let user = User {
-        id: user_id,
-        uuid,
-        first_name: body.first_name,
-        last_name: body.last_name,
-        display_name: body.display_name,
-        preferred_username: body.preferred_username,
-        email: body.email.clone(),
-        email_confirmed: false,
-        is_admin: is_first_user,
-        auth_factors: AuthFactors {
-            password: PasswordFactor {
-                password_hash: Some(hashed_password),
-            },
-            ..Default::default()
-        },
-        groups: vec![],
+    let txn = state.db.begin().await?;
+
+    let new_user = user::ActiveModel {
+        uuid: Set(Uuid::new_v4()),
+        first_name: Set(body.first_name),
+        last_name: Set(body.last_name),
+        display_name: Set(body.display_name),
+        preferred_username: Set(body.preferred_username),
+        email: Set(body.email),
+        email_confirmed: Set(false),
+        is_admin: Set(is_first_user),
+        ..Default::default()
     };
 
-    state
-        .database
-        .collection::<User>("users")
-        .insert_one(user)
-        .await
-        .map_err(|error| {
-            if is_duplicate_key_error(&error) {
-                AxumError::bad_request(eyre::eyre!(
-                    "User with this username or email already exists"
-                ))
-            } else {
-                AxumError::from(error)
-            }
-        })?;
-
-    if let Err(error) = send_confirmation_email(&state, user_id, &body.email).await {
-        if let Err(cleanup_error) = state
-            .database
-            .collection::<EmailConfirmationToken>("email_confirmation_tokens")
-            .delete_many(doc! { "user_id": user_id })
-            .await
-        {
-            tracing::warn!(
-                error = ?cleanup_error,
-                %user_id,
-                "Failed to clean up confirmation tokens after registration error"
-            );
+    let user = new_user.insert(&txn).await.map_err(|e| {
+        if is_unique_violation(&e) {
+            AxumError::bad_request(eyre::eyre!(
+                "User with this username or email already exists"
+            ))
+        } else {
+            AxumError::from(e)
         }
+    })?;
 
-        if let Err(cleanup_error) = state
-            .database
-            .collection::<User>("users")
-            .delete_one(doc! { "_id": user_id })
-            .await
-        {
-            tracing::error!(
-                error = ?cleanup_error,
-                %user_id,
-                "Failed to roll back user after registration error"
-            );
-        }
+    // Record that the user has a password auth method
+    let now = chrono::Utc::now();
+    let auth_method = auth_method::ActiveModel {
+        user_id: Set(user.id),
+        method_type: Set(auth_method::Method::Password),
+        is_enabled: Set(true),
+        enrolled_at: Set(now),
+        modified_at: Set(now),
+        last_used_at: Set(None),
+    };
+    auth_method.insert(&txn).await?;
 
-        return Err(error);
-    }
+    // Store the hashed password
+    let password_record = password::ActiveModel {
+        user_id: Set(user.id),
+        password_hash: Set(hashed_password),
+    };
+    password_record.insert(&txn).await?;
+
+    txn.commit().await?;
+
+    // TODO: send confirmation email
 
     Ok(Json(CreateSuccess {
         success: true,
-        id: user_id.to_string(),
+        id: user.id,
     }))
 }

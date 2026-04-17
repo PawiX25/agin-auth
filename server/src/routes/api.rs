@@ -3,21 +3,31 @@
 // mod applications;
 // mod confirm_email;
 mod health;
-// mod login;
-// mod logout;
+mod login;
+mod logout;
 // mod password_reset;
-// mod register;
+mod register;
 // mod settings;
 
+use axum::middleware;
 use serde::{Deserialize, Serialize};
 use strum::Display;
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 
-use crate::state::AppState;
+use crate::{middlewares::require_auth::require_auth, state::AppState};
 
 pub fn routes() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new().nest("/health", health::routes())
+    let auth = OpenApiRouter::new()
+        .nest("/logout", logout::routes())
+        .layer(middleware::from_fn(require_auth));
+
+    let public = OpenApiRouter::new()
+        .nest("/health", health::routes())
+        .nest("/login", login::routes())
+        .nest("/register", register::routes());
+
+    auth.merge(public)
 }
 
 #[derive(Clone, Deserialize, Serialize, Eq, PartialEq, Debug, Display)]

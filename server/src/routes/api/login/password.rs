@@ -2,7 +2,8 @@ use axum::{Extension, Json};
 use axum_client_ip::ClientIp;
 use axum_valid::Valid;
 use color_eyre::eyre;
-use mongodb::bson::doc;
+use entity::{password, user};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use utoipa::ToSchema;
@@ -11,7 +12,6 @@ use validator::Validate;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::{FirstFactor, get_second_factors, get_user, set_recent_factor},
     routes::api::AuthState,
     state::AppState,
     utils::{hash_password, verify_password},
@@ -55,37 +55,42 @@ async fn login_with_password(
     ClientIp(client_ip): ClientIp,
     Valid(Json(body)): Valid<Json<LoginBody>>,
 ) -> AxumResult<Json<SuccessfulLoginResponse>> {
-    let user = get_user(&state.database, &body.username).await?;
+    // Find user by username or email
+    let user = user::Entity::find()
+        .filter(
+            Condition::any()
+                .add(user::Column::PreferredUsername.eq(&body.username))
+                .add(user::Column::Email.eq(&body.username)),
+        )
+        .one(&state.db)
+        .await?;
 
-    // Hashing the password in order to prevent timing attacks
-    if user.is_none()
-        || user
-            .clone()
-            .unwrap()
-            .auth_factors
-            .password
-            .password_hash
-            .is_none()
-    {
+    let Some(user) = user else {
         let _ = hash_password(&body.password);
-
         return Err(AxumError::unauthorized(eyre::eyre!(
             "Invalid username or password"
         )));
-    }
+    };
 
-    let user = user.unwrap();
+    // Look up password credential
+    let password_cred = password::Entity::find_by_id(user.id).one(&state.db).await?;
 
-    let password_hash = &user.clone().auth_factors.password.password_hash.unwrap();
+    let Some(password_cred) = password_cred else {
+        let _ = hash_password(&body.password);
+        return Err(AxumError::unauthorized(eyre::eyre!(
+            "Invalid username or password"
+        )));
+    };
 
-    verify_password(&body.password, password_hash)
+    verify_password(&body.password, &password_cred.password_hash)
         .map_err(|_| AxumError::unauthorized(eyre::eyre!("Invalid username or password")))?;
 
     session.insert("user_id", user.id).await?;
 
-    let second_factors = get_second_factors(&user);
+    // TODO: check for second factors (totp, webauthn, etc.)
+    let second_factors_exist = false;
 
-    if second_factors.is_empty() {
+    if !second_factors_exist {
         session
             .insert("auth_state", AuthState::Authenticated)
             .await?;
@@ -108,15 +113,13 @@ async fn login_with_password(
         }));
     }
 
-    set_recent_factor(&state.database, &user.id, FirstFactor::Password.into()).await?;
-
     session
         .insert("auth_state", AuthState::BeforeTwoFactor)
         .await?;
 
     Ok(Json(SuccessfulLoginResponse {
         two_factor_required: true,
-        second_factors: Some(second_factors),
-        recent_factor: user.auth_factors.recent.second_factor,
+        second_factors: Some(vec![]),
+        recent_factor: None,
     }))
 }

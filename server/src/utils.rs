@@ -1,4 +1,5 @@
 use rand::{RngExt, distr::Alphanumeric, rngs::ThreadRng};
+use sea_orm::DbErr;
 use sha2::{Digest, Sha256};
 
 pub fn generate_client_id() -> String {
@@ -58,4 +59,10 @@ pub fn verify_password(password: &str, hash: &str) -> color_eyre::eyre::Result<(
         .map_err(|_| color_eyre::eyre::eyre!("Invalid password"))?;
 
     Ok(())
+}
+
+/// Check if a `DbErr` is a PostgreSQL unique constraint violation (SQLSTATE 23505).
+pub fn is_unique_violation(err: &DbErr) -> bool {
+    let msg = err.to_string();
+    msg.contains("duplicate key value violates unique constraint") || msg.contains("23505")
 }

@@ -12,6 +12,7 @@ pub struct Model {
     pub display_name: String,
     pub preferred_username: String,
     pub email: String,
+    pub email_confirmed: bool,
     pub is_admin: bool,
     pub created_at: DateTimeUtc,
 }

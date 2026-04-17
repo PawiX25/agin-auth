@@ -1,3 +1,4 @@
+mod auth_method_helpers;
 mod axum_error;
 mod database;
 mod extractors;
@@ -55,7 +56,7 @@ async fn main() -> Result<()> {
         Arc::new(mail::MailService::new(
             cfg,
             settings.general.app_name.clone(),
-            settings.general.public_url.to_string(),
+            &settings.general.public_url.to_string(),
         ))
     });
 

@@ -1,12 +1,13 @@
 use axum::{Extension, Json};
-use mongodb::bson::doc;
+use entity::session;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Serialize;
 use tower_sessions::Session;
 use tracing::warn;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
-use crate::{axum_error::AxumResult, database::SessionRecord, state::AppState};
+use crate::{axum_error::AxumResult, state::AppState};
 
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(logout))
@@ -36,14 +37,14 @@ async fn logout(
 
     session.flush().await?;
 
-    if let Some(session_id) = session_id
-        && let Err(error) = state
-            .database
-            .collection::<SessionRecord>("sessions")
-            .delete_one(doc! { "_id": session_id })
+    if let Some(session_id) = session_id {
+        if let Err(error) = session::Entity::delete_many()
+            .filter(session::Column::PublicId.eq(session_id))
+            .exec(&state.db)
             .await
-    {
-        warn!(error = ?error, "Failed to clean up session record after logout");
+        {
+            warn!(error = ?error, "Failed to clean up session record after logout");
+        }
     }
 
     Ok(Json(LogoutResponse { success: true }))
