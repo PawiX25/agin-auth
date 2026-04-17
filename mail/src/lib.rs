@@ -32,7 +32,7 @@ pub struct MailService {
 }
 
 impl MailService {
-    pub fn new(config: MailConfig, app_name: String, public_url: String) -> Self {
+    pub fn new(config: MailConfig, app_name: String, public_url: &str) -> Self {
         Self {
             config,
             app_name,

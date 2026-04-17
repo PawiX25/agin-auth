@@ -7,8 +7,11 @@ edition = "2024"
 hypertext = "0.12.1"
 mail-builder = "0.3.2"
 mail-send = "0.4.9"
-serde = { version = "1.0.228", features = ["derive"] }
-thiserror = "2.0.17"
+serde.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+
+[lints]
+workspace = true

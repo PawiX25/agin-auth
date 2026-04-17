@@ -4,10 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-async-trait = "0.1.89"
-axum = "0.8.8"
-color-eyre = "0.6.5"
-serde = { version = "1.0.228", features = ["derive"] }
-thiserror = "2.0.17"
-utoipa = "5.4.0"
-validator = "0.20.0"
+async-trait.workspace = true
+color-eyre.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tower-sessions-core.workspace = true
+utoipa.workspace = true
+validator.workspace = true
+
+[lints]
+workspace = true

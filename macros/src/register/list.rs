@@ -12,7 +12,7 @@ pub struct FactorList {
 
 impl Parse for FactorList {
     fn parse(input: ParseStream) -> Result<Self, syn::Error> {
-        Ok(FactorList {
+        Ok(Self {
             entries: Punctuated::parse_terminated(input)?,
         })
     }

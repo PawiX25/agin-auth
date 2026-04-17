@@ -22,11 +22,11 @@ pub enum ImplKind {
 }
 
 impl ImplKind {
-    pub fn detect(trait_ty: &Path) -> Result<ImplKind, darling::Error> {
+    pub fn detect(trait_ty: &Path) -> Result<Self, darling::Error> {
         trait_ty
             .segments
             .last()
-            .map(|s| ImplKind::from_str(&s.ident.to_string()))
+            .map(|s| Self::from_str(&s.ident.to_string()))
             .ok_or_else(|| darling::Error::custom("Missing trait in the implmentation"))
             .and_then(|s| s.map_err(|_| darling::Error::custom("Unknwon trait being implemented")))
     }
