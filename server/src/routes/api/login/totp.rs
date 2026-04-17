@@ -1,13 +1,14 @@
 use axum::{Extension, Json};
 use color_eyre::eyre;
-use mongodb::bson::doc;
+use entity::{auth_method, totp};
+use sea_orm::EntityTrait;
 use tower_sessions::Session;
 
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
+    auth_method_helpers::touch_auth_method,
     axum_error::{AxumError, AxumResult},
-    database::{SecondFactor, get_user_by_id, set_recent_factor},
     middlewares::require_auth::UserId,
     routes::api::{
         AuthState,
@@ -40,25 +41,15 @@ async fn login_with_totp(
     session: Session,
     Json(body): Json<TotpCodeBody>,
 ) -> AxumResult<Json<SuccessfulLoginResponse>> {
-    let user = get_user_by_id(&state.database, &user_id).await?;
+    let totp_record = totp::Entity::find_by_id(*user_id).one(&state.db).await?;
 
-    if user.is_none()
-        || !user
-            .clone()
-            .unwrap()
-            .auth_factors
-            .totp
-            .clone()
-            .is_some_and(|totp| totp.fully_enabled)
-    {
+    let Some(totp_record) = totp_record.filter(|t| t.fully_enabled) else {
         return Err(AxumError::unauthorized(eyre::eyre!("Invalid 2FA code")));
-    }
+    };
 
-    let user = user.unwrap();
+    verify_totp(&totp_record.secret, &body.code)?;
 
-    verify_totp(&user.auth_factors.totp.unwrap().secret, &body.code)?;
-
-    set_recent_factor(&state.database, &user_id, SecondFactor::Totp.into()).await?;
+    touch_auth_method(&state.db, *user_id, auth_method::Method::Totp).await?;
 
     session
         .insert("auth_state", AuthState::Authenticated)

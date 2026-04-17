@@ -1,14 +1,15 @@
 use axum::{Extension, Json};
-use color_eyre::eyre::{self};
-use mongodb::bson::doc;
+use color_eyre::eyre;
+use entity::{auth_method, recovery_code};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, sea_query::Expr};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
+    auth_method_helpers::touch_auth_method,
     axum_error::{AxumError, AxumResult},
-    database::{SecondFactor, User, get_user_by_id, set_recent_factor},
     middlewares::require_auth::UserId,
     routes::api::{AuthState, settings::factors::recovery_codes::verify_recovery_code},
     state::AppState,
@@ -49,44 +50,33 @@ async fn login_with_recovery_code(
     session: Session,
     Json(body): Json<RecoveryCodeLoginBody>,
 ) -> AxumResult<Json<SuccessfulLoginResponse>> {
-    let user = get_user_by_id(&state.database, &user_id).await?;
+    let codes = recovery_code::Entity::find()
+        .filter(recovery_code::Column::UserId.eq(*user_id))
+        .all(&state.db)
+        .await?;
 
-    if user.is_none() || user.clone().unwrap().auth_factors.recovery_codes.is_empty() {
+    if codes.is_empty() {
         return Err(AxumError::unauthorized(eyre::eyre!("Invalid 2FA code")));
     }
 
-    let user = user.unwrap();
+    let code_hash = verify_recovery_code(body.code, codes)?;
 
-    let code_hash = verify_recovery_code(body.code, user.auth_factors.recovery_codes)?;
+    let update_result = recovery_code::Entity::update_many()
+        .col_expr(recovery_code::Column::Used, Expr::value(true))
+        .filter(recovery_code::Column::UserId.eq(*user_id))
+        .filter(recovery_code::Column::CodeHash.eq(&code_hash))
+        .filter(recovery_code::Column::Used.eq(false))
+        .exec(&state.db)
+        .await?
+        .rows_affected;
 
-    let update_result = state
-        .database
-        .collection::<User>("users")
-        .update_one(
-            doc! {
-                "_id": *user_id,
-                "auth_factors.recovery_codes": {
-                    "$elemMatch": {
-                        "code_hash": &code_hash,
-                        "used": false
-                    }
-                }
-            },
-            doc! {
-                "$set": {
-                    "auth_factors.recovery_codes.$.used": true
-                }
-            },
-        )
-        .await?;
-
-    if update_result.modified_count == 0 {
+    if update_result != 1 {
         return Err(AxumError::unauthorized(eyre::eyre!(
             "Recovery code already used"
         )));
     }
 
-    set_recent_factor(&state.database, &user_id, SecondFactor::RecoveryCode.into()).await?;
+    touch_auth_method(&state.db, *user_id, auth_method::Method::RecoveryCodes).await?;
 
     session
         .insert("auth_state", AuthState::Authenticated)

@@ -2,7 +2,7 @@ use axum::{Extension, Json};
 use axum_client_ip::ClientIp;
 use axum_valid::Valid;
 use color_eyre::eyre;
-use entity::{password, user};
+use entity::{auth_method, password, user};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
@@ -11,6 +11,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use validator::Validate;
 
 use crate::{
+    auth_method_helpers::touch_auth_method,
     axum_error::{AxumError, AxumResult},
     routes::api::AuthState,
     state::AppState,
@@ -18,6 +19,15 @@ use crate::{
 };
 
 use super::SuccessfulLoginResponse;
+
+pub(crate) fn second_factor_slug(method: auth_method::Method) -> Option<&'static str> {
+    match method {
+        auth_method::Method::Totp => Some("totp"),
+        auth_method::Method::RecoveryCodes => Some("recoverycode"),
+        auth_method::Method::WebAuthn => Some("webauthn"),
+        auth_method::Method::Password | auth_method::Method::Pgp => None,
+    }
+}
 
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(login_with_password))
@@ -87,10 +97,21 @@ async fn login_with_password(
 
     session.insert("user_id", user.id).await?;
 
-    // TODO: check for second factors (totp, webauthn, etc.)
-    let second_factors_exist = false;
+    // Check for second factors
+    let second_factor_methods = auth_method::Entity::find()
+        .filter(auth_method::Column::UserId.eq(user.id))
+        .filter(auth_method::Column::IsEnabled.eq(true))
+        .filter(auth_method::Column::MethodType.is_in([
+            auth_method::Method::Totp,
+            auth_method::Method::RecoveryCodes,
+            auth_method::Method::WebAuthn,
+        ]))
+        .all(&state.db)
+        .await?;
 
-    if !second_factors_exist {
+    if second_factor_methods.is_empty() {
+        touch_auth_method(&state.db, user.id, auth_method::Method::Password).await?;
+
         session
             .insert("auth_state", AuthState::Authenticated)
             .await?;
@@ -117,9 +138,23 @@ async fn login_with_password(
         .insert("auth_state", AuthState::BeforeTwoFactor)
         .await?;
 
+    let factor_names: Vec<String> = second_factor_methods
+        .iter()
+        .filter_map(|m| second_factor_slug(m.method_type))
+        .map(str::to_owned)
+        .collect();
+
+    // Find most recently used second factor
+    let recent_factor = second_factor_methods
+        .iter()
+        .filter_map(|m| m.last_used_at.map(|t| (m, t)))
+        .max_by_key(|(_, t)| *t)
+        .and_then(|(m, _)| second_factor_slug(m.method_type))
+        .map(str::to_owned);
+
     Ok(Json(SuccessfulLoginResponse {
         two_factor_required: true,
-        second_factors: Some(vec![]),
-        recent_factor: None,
+        second_factors: Some(factor_names),
+        recent_factor,
     }))
 }

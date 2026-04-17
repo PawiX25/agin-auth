@@ -1,12 +1,11 @@
 use axum::{Extension, Json};
-use color_eyre::eyre::{self, ContextCompat};
+use color_eyre::eyre;
 use tower_sessions::Session;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use webauthn_rs::prelude::*;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::get_user_by_id,
     middlewares::require_auth::{UnauthorizedError, UserId},
     routes::api::{AuthState, login::SuccessfulLoginResponse},
     state::AppState,
@@ -37,10 +36,6 @@ async fn webauthn_finish_login(
     session: Session,
     Json(auth): Json<PublicKeyCredential>,
 ) -> AxumResult<Json<SuccessfulLoginResponse>> {
-    let user = get_user_by_id(&state.database, &user_id)
-        .await?
-        .wrap_err("User not found")?;
-
     let auth_state: PasskeyAuthentication =
         session
             .get("webauthn_login_state")
@@ -58,7 +53,7 @@ async fn webauthn_finish_login(
             AxumError::bad_request(eyre::eyre!("WebAuthn authentication failed: {}", e))
         })?;
 
-    update_webauthn_credentials(&state, &user, &auth_result).await?;
+    update_webauthn_credentials(&state, *user_id, &auth_result).await?;
 
     session
         .insert("auth_state", AuthState::Authenticated)

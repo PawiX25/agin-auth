@@ -1,9 +1,11 @@
 use axum::{Extension, Json};
 use axum_valid::Valid;
 use chrono::{DateTime, Utc};
-use color_eyre::eyre::{self};
-use pgp::composed::{Any, Deserializable, SignedPublicKey};
+use color_eyre::eyre;
+use entity::{auth_method, pgp as pgp_entity, user};
+use pgp_lib::composed::{Any, Deserializable, SignedPublicKey};
 use rand::{RngExt, distr::Alphanumeric};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use utoipa::ToSchema;
@@ -11,13 +13,14 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use validator::Validate;
 
 use crate::{
+    auth_method_helpers::touch_auth_method,
     axum_error::{AxumError, AxumResult},
-    database::{FirstFactor, get_second_factors, get_user, set_recent_factor},
     routes::api::AuthState,
     state::AppState,
 };
 
 use super::super::SuccessfulLoginResponse;
+use super::super::password::second_factor_slug;
 
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(get_pgp_challenge, respond_to_pgp_challenge))
@@ -125,17 +128,34 @@ async fn respond_to_pgp_challenge(
         return Err(invalid_signature());
     }
 
-    let user = get_user(&state.database, &body.username).await?;
+    // Find user by username or email
+    let found_user = user::Entity::find()
+        .filter(
+            Condition::any()
+                .add(user::Column::PreferredUsername.eq(&body.username))
+                .add(user::Column::Email.eq(&body.username)),
+        )
+        .one(&state.db)
+        .await?;
 
-    let user = match user {
-        Some(user) if !user.auth_factors.pgp.is_empty() => user,
-        _ => return Err(invalid_signature()),
+    let Some(found_user) = found_user else {
+        return Err(invalid_signature());
     };
+
+    // Get user's PGP keys
+    let pgp_keys = pgp_entity::Entity::find()
+        .filter(pgp_entity::Column::UserId.eq(found_user.id))
+        .all(&state.db)
+        .await?;
+
+    if pgp_keys.is_empty() {
+        return Err(invalid_signature());
+    }
 
     // Try verifying against all registered PGP keys
     let mut verified = false;
-    for pgp_factor in &user.auth_factors.pgp {
-        if let Ok((public_key, _)) = SignedPublicKey::from_string(&pgp_factor.public_key)
+    for pgp_key in &pgp_keys {
+        if let Ok((public_key, _)) = SignedPublicKey::from_string(&pgp_key.public_key)
             && msg.verify(&public_key).is_ok()
         {
             verified = true;
@@ -151,11 +171,22 @@ async fn respond_to_pgp_challenge(
         .remove::<PgpChallengeConfig>("login::pgp_challenge")
         .await?;
 
-    session.insert("user_id", user.id).await?;
+    session.insert("user_id", found_user.id).await?;
 
-    let second_factors = get_second_factors(&user);
+    // Check for second factors
+    let second_factor_methods = auth_method::Entity::find()
+        .filter(auth_method::Column::UserId.eq(found_user.id))
+        .filter(auth_method::Column::IsEnabled.eq(true))
+        .filter(
+            auth_method::Column::MethodType
+                .is_not_in([auth_method::Method::Password, auth_method::Method::Pgp]),
+        )
+        .all(&state.db)
+        .await?;
 
-    if second_factors.is_empty() {
+    if second_factor_methods.is_empty() {
+        touch_auth_method(&state.db, found_user.id, auth_method::Method::Pgp).await?;
+
         session
             .insert("auth_state", AuthState::Authenticated)
             .await?;
@@ -167,16 +198,29 @@ async fn respond_to_pgp_challenge(
         }));
     }
 
-    set_recent_factor(&state.database, &user.id, FirstFactor::Pgp.into()).await?;
+    touch_auth_method(&state.db, found_user.id, auth_method::Method::Pgp).await?;
 
     session
         .insert("auth_state", AuthState::BeforeTwoFactor)
         .await?;
 
+    let factor_names: Vec<String> = second_factor_methods
+        .iter()
+        .filter_map(|m| second_factor_slug(m.method_type))
+        .map(String::from)
+        .collect();
+
+    let recent_factor = second_factor_methods
+        .iter()
+        .filter_map(|m| m.last_used_at.map(|t| (m, t)))
+        .max_by_key(|(_, t)| *t)
+        .and_then(|(m, _)| second_factor_slug(m.method_type))
+        .map(String::from);
+
     Ok(Json(SuccessfulLoginResponse {
         two_factor_required: true,
-        second_factors: Some(second_factors),
-        recent_factor: user.auth_factors.recent.second_factor,
+        second_factors: Some(factor_names),
+        recent_factor,
     }))
 }
 

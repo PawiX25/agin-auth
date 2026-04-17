@@ -1,12 +1,13 @@
 use axum::{Extension, Json};
 use color_eyre::{Result, eyre};
+use entity::{user, webauthn as webauthn_entity};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use tower_sessions::Session;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use webauthn_rs::prelude::*;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::get_user_by_uuid,
     middlewares::require_auth::UnauthorizedError,
     routes::api::{AuthState, login::SuccessfulLoginResponse},
     state::AppState,
@@ -54,16 +55,20 @@ async fn passwordless_finish(
             AxumError::unauthorized(eyre::eyre!("Failed to identify credential: {}", e))
         })?;
 
-    let user =
-        get_user_by_uuid(&state.database, &user_uuid)
-            .await?
-            .ok_or(AxumError::unauthorized(eyre::eyre!(
-                "User not found for this credential"
-            )))?;
+    let found_user = user::Entity::find()
+        .filter(user::Column::Uuid.eq(user_uuid))
+        .one(&state.db)
+        .await?
+        .ok_or(AxumError::unauthorized(eyre::eyre!(
+            "User not found for this credential"
+        )))?;
 
-    let discoverable_keys = user
-        .auth_factors
-        .webauthn
+    let keys = webauthn_entity::Entity::find()
+        .filter(webauthn_entity::Column::UserId.eq(found_user.id))
+        .all(&state.db)
+        .await?;
+
+    let discoverable_keys = keys
         .iter()
         .map(|f| -> Result<DiscoverableKey> {
             let passkey: Passkey = serde_json::from_str(&f.serialized_key)?;
@@ -84,9 +89,9 @@ async fn passwordless_finish(
             AxumError::unauthorized(eyre::eyre!("Discoverable authentication failed: {}", e))
         })?;
 
-    update_webauthn_credentials(&state, &user, &auth_result).await?;
+    update_webauthn_credentials(&state, found_user.id, &auth_result).await?;
 
-    session.insert("user_id", user.id).await?;
+    session.insert("user_id", found_user.id).await?;
     session
         .insert("auth_state", AuthState::Authenticated)
         .await?;

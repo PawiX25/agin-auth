@@ -1,18 +1,28 @@
-mod password;
-// TODO: re-enable after PostgreSQL migration
-// mod pgp;
-// mod recovery_codes;
-// mod totp;
-// mod webauthn;
+pub(crate) mod password;
+mod pgp;
+mod recovery_codes;
+mod totp;
+mod webauthn;
 
+use axum::middleware;
 use serde::Serialize;
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 
-use crate::state::AppState;
+use crate::{middlewares::require_auth::require_auth, state::AppState};
 
 pub fn routes() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new().nest("/password", password::routes())
+    let two_factor = OpenApiRouter::new()
+        .nest("/totp", totp::routes())
+        .nest("/recovery-codes", recovery_codes::routes())
+        .nest("/webauthn", webauthn::two_factor_routes())
+        .layer(middleware::from_fn(require_auth));
+
+    OpenApiRouter::new()
+        .nest("/password", password::routes())
+        .nest("/pgp", pgp::routes())
+        .nest("/webauthn/passwordless", webauthn::passwordless_routes())
+        .merge(two_factor)
 }
 
 #[derive(Serialize, ToSchema)]

@@ -1,12 +1,13 @@
 use axum::{Extension, Json};
-use color_eyre::eyre::{self, Context, ContextCompat, Result};
+use color_eyre::eyre::{self, Context, Result};
+use entity::webauthn as webauthn_entity;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use tower_sessions::Session;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use webauthn_rs::prelude::{Passkey, RequestChallengeResponse};
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::get_user_by_id,
     middlewares::require_auth::{UnauthorizedError, UserId},
     state::AppState,
 };
@@ -32,15 +33,14 @@ async fn webauthn_start_login(
     Extension(state): Extension<AppState>,
     session: Session,
 ) -> AxumResult<Json<RequestChallengeResponse>> {
-    let user = get_user_by_id(&state.database, &user_id)
-        .await?
-        .wrap_err("User not found")?;
-
     session.remove_value("webauthn_login_state").await?;
 
-    let allow_credentials = user
-        .auth_factors
-        .webauthn
+    let keys = webauthn_entity::Entity::find()
+        .filter(webauthn_entity::Column::UserId.eq(*user_id))
+        .all(&state.db)
+        .await?;
+
+    let allow_credentials = keys
         .iter()
         .map(|f| -> Result<Passkey> {
             let passkey: Passkey = serde_json::from_str(&f.serialized_key)?;
