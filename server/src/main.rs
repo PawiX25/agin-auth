@@ -1,11 +1,9 @@
 mod axum_error;
 mod database;
-mod entity;
 mod extractors;
 mod factors;
 mod init;
 mod middlewares;
-mod mongo_id;
 mod oidc;
 mod routes;
 mod settings;
@@ -66,7 +64,7 @@ async fn main() -> Result<()> {
     let (session_layer, redis_pool) = init_session_store(&settings).await?;
 
     let app_state = AppState {
-        database,
+        db: database,
         settings: settings.clone(),
         webauthn,
         mail_service,

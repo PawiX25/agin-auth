@@ -7,14 +7,7 @@ mod private {
 }
 
 pub trait IdLike:
-    Clone
-    + Copy
-    + PartialEq
-    + Eq
-    + Debug
-    + Serialize
-    + for<'de> Deserialize<'de>
-    + private::Sealed
+    Clone + Copy + PartialEq + Eq + Debug + Serialize + for<'de> Deserialize<'de> + private::Sealed
 {
     fn as_i32(&self) -> i32;
 }

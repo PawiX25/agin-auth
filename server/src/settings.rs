@@ -53,8 +53,6 @@ pub struct General {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Db {
     pub connection_string: String,
-
-    pub database_name: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -170,8 +168,7 @@ impl Settings {
                 trust_proxy: false,
             },
             db: Db {
-                connection_string: "mongodb://localhost:27017".to_string(),
-                database_name: "agin-auth".to_string(),
+                connection_string: "postgres://agin:agin@localhost:5432/agin_auth".to_string(),
             },
             redis: Redis {
                 connection_string: "redis://localhost:6379".to_string(),

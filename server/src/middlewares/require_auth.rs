@@ -2,32 +2,31 @@ use std::ops::Deref;
 
 use axum::{Extension, extract::Request, http::header, middleware::Next, response::Response};
 use axum_client_ip::ClientIp;
-use color_eyre::{eyre, eyre::Result};
-use mongodb::bson::oid::ObjectId;
+use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use utoipa::ToSchema;
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::{get_user_by_id, record_session},
+    database::record_session,
     routes::api::AuthState,
     state::AppState,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UserId(pub ObjectId);
+pub struct UserId(pub i32);
 
 impl Deref for UserId {
-    type Target = ObjectId;
+    type Target = i32;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-async fn get_auth_state(session: &Session) -> Result<(ObjectId, AuthState)> {
-    let user_id = session.get::<ObjectId>("user_id").await?;
+async fn get_auth_state(session: &Session) -> color_eyre::Result<(i32, AuthState)> {
+    let user_id = session.get::<i32>("user_id").await?;
     let auth_state = session.get::<AuthState>("auth_state").await?;
     if auth_state.is_none() || user_id.is_none() {
         return Err(eyre::eyre!("Unauthorized"));
@@ -55,26 +54,24 @@ pub async fn require_auth(
         return Err(AxumError::unauthorized(eyre::eyre!("Unauthorized")));
     }
 
-    // Record/update session in MongoDB
     if let Some(session_id) = session.id() {
         let user_agent = request
             .headers()
             .get(header::USER_AGENT)
-            .and_then(|v| v.to_str().ok())
+            .and_then(|value| value.to_str().ok())
             .unwrap_or("unknown")
-            .to_string();
+            .to_owned();
 
-        let db = state.database.clone();
-        if let Err(e) = record_session(
-            &db,
+        if let Err(error) = record_session(
+            &state.db,
             &session_id.to_string(),
-            &user_id,
+            user_id,
             &ip.to_string(),
             &user_agent,
         )
         .await
         {
-            tracing::warn!(error = ?e, "Failed to record session");
+            tracing::warn!(error = ?error, "Failed to record session");
         }
     }
 
@@ -126,7 +123,11 @@ pub async fn require_admin(
     request: Request,
     next: Next,
 ) -> AxumResult<Response> {
-    let user = get_user_by_id(&state.database, &user_id)
+    use entity::user;
+    use sea_orm::{EntityTrait, prelude::*};
+
+    let user = user::Entity::find_by_id(*user_id)
+        .one(&state.db)
         .await
         .map_err(|_| AxumError::forbidden(eyre::eyre!("Forbidden")))?
         .ok_or_else(|| AxumError::forbidden(eyre::eyre!("Forbidden")))?;
