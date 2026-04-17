@@ -1,8 +1,8 @@
 use axum::{Extension, Json};
 use base64::Engine;
 use color_eyre::eyre::{self, Context, ContextCompat};
-use entity::webauthn as webauthn_entity;
-use sea_orm::{ActiveModelTrait, Set};
+use entity::{auth_method, webauthn as webauthn_entity};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::Serialize;
 use tower_sessions::Session;
 use utoipa::ToSchema;
@@ -70,6 +70,25 @@ async fn webauthn_finish_setup(
         serialized_key: Set(serialized_key),
     };
     model.insert(&state.db).await?;
+
+    // Upsert auth_method record for WebAuthn
+    let now = chrono::Utc::now();
+    let existing_method = auth_method::Entity::find()
+        .filter(auth_method::Column::UserId.eq(*user_id))
+        .filter(auth_method::Column::MethodType.eq(auth_method::Method::WebAuthn))
+        .one(&state.db)
+        .await?;
+    if existing_method.is_none() {
+        let am = auth_method::ActiveModel {
+            user_id: Set(*user_id),
+            method_type: Set(auth_method::Method::WebAuthn),
+            is_enabled: Set(true),
+            enrolled_at: Set(now),
+            modified_at: Set(now),
+            last_used_at: Set(None),
+        };
+        am.insert(&state.db).await?;
+    }
 
     Ok(Json(WebAuthnFinishSuccess { success: true }))
 }

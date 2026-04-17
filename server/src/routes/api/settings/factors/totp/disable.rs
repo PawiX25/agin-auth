@@ -1,7 +1,7 @@
 use axum::{Extension, Json};
 use color_eyre::eyre;
-use entity::{totp, user};
-use sea_orm::{EntityTrait, ModelTrait};
+use entity::{auth_method, totp, user};
+use sea_orm::{ColumnTrait, EntityTrait, ModelTrait, QueryFilter};
 use serde::Serialize;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -49,6 +49,16 @@ async fn disable_totp(
     }
 
     totp_record.delete(&state.db).await?;
+
+    // Remove auth_method record for TOTP
+    if let Some(method) = auth_method::Entity::find()
+        .filter(auth_method::Column::UserId.eq(*user_id))
+        .filter(auth_method::Column::MethodType.eq(auth_method::Method::Totp))
+        .one(&state.db)
+        .await?
+    {
+        method.delete(&state.db).await?;
+    }
 
     if let Some(mail) = &state.mail_service {
         let user = user::Entity::find_by_id(*user_id).one(&state.db).await?;

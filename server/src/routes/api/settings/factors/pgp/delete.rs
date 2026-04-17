@@ -1,7 +1,7 @@
 use axum::{Extension, Json, extract::Path};
 use color_eyre::eyre;
-use entity::{pgp, user};
-use sea_orm::{ColumnTrait, EntityTrait, ModelTrait, QueryFilter};
+use entity::{auth_method, pgp, user};
+use sea_orm::{ColumnTrait, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter};
 use serde::Serialize;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -51,6 +51,22 @@ async fn delete_pgp_key(
         .ok_or_else(|| AxumError::not_found(eyre::eyre!("PGP key not found")))?;
 
     key.delete(&state.db).await?;
+
+    // Remove auth_method if no PGP keys remain
+    let remaining = pgp::Entity::find()
+        .filter(pgp::Column::UserId.eq(*user_id))
+        .count(&state.db)
+        .await?;
+    if remaining == 0 {
+        if let Some(method) = auth_method::Entity::find()
+            .filter(auth_method::Column::UserId.eq(*user_id))
+            .filter(auth_method::Column::MethodType.eq(auth_method::Method::Pgp))
+            .one(&state.db)
+            .await?
+        {
+            method.delete(&state.db).await?;
+        }
+    }
 
     if let Some(mail) = &state.mail_service {
         let user = user::Entity::find_by_id(*user_id).one(&state.db).await?;

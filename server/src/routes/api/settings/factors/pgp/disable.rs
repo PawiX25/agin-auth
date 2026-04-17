@@ -1,7 +1,7 @@
 use axum::{Extension, Json};
 use color_eyre::eyre;
-use entity::{pgp, user};
-use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+use entity::{auth_method, pgp, user};
+use sea_orm::{ColumnTrait, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter};
 use serde::Serialize;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -52,6 +52,16 @@ async fn disable_pgp(
         .filter(pgp::Column::UserId.eq(*user_id))
         .exec(&state.db)
         .await?;
+
+    // Remove auth_method record for PGP
+    if let Some(method) = auth_method::Entity::find()
+        .filter(auth_method::Column::UserId.eq(*user_id))
+        .filter(auth_method::Column::MethodType.eq(auth_method::Method::Pgp))
+        .one(&state.db)
+        .await?
+    {
+        method.delete(&state.db).await?;
+    }
 
     if let Some(mail) = &state.mail_service {
         let user = user::Entity::find_by_id(*user_id).one(&state.db).await?;

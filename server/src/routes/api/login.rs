@@ -9,14 +9,14 @@ use serde::Serialize;
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 
-use crate::{middlewares::require_auth::require_auth, state::AppState};
+use crate::{middlewares::require_auth::require_first_factor, state::AppState};
 
 pub fn routes() -> OpenApiRouter<AppState> {
     let two_factor = OpenApiRouter::new()
         .nest("/totp", totp::routes())
         .nest("/recovery-codes", recovery_codes::routes())
         .nest("/webauthn", webauthn::two_factor_routes())
-        .layer(middleware::from_fn(require_auth));
+        .layer(middleware::from_fn(require_first_factor));
 
     OpenApiRouter::new()
         .nest("/password", password::routes())
