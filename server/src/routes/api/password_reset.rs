@@ -1,16 +1,18 @@
 use axum::{Extension, Json};
 use axum_valid::Valid;
-use chrono::{DateTime, Duration, Utc};
-use color_eyre::eyre::{self, ContextCompat};
-use mongodb::bson::{doc, oid::ObjectId};
+use chrono::{Duration, Utc};
+use color_eyre::eyre;
+use entity::{auth_method, password, password_reset_token, refresh_token, user};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::Expr};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use validator::Validate;
 
 use crate::{
+    auth_method_helpers::upsert_auth_method,
     axum_error::{AxumError, AxumResult},
-    database::{User, invalidate_user_sessions},
+    database::invalidate_user_sessions,
     state::AppState,
     utils::{generate_reset_token, hash_password, hash_token},
 };
@@ -19,13 +21,6 @@ pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(request_reset))
         .routes(routes!(confirm_reset))
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct PasswordResetToken {
-    token_hash: String,
-    user_id: ObjectId,
-    expires_at: DateTime<Utc>,
 }
 
 #[derive(Deserialize, ToSchema, Validate)]
@@ -59,10 +54,9 @@ async fn request_reset(
         )));
     };
 
-    let user = state
-        .database
-        .collection::<User>("users")
-        .find_one(doc! { "email": &body.email })
+    let user = user::Entity::find()
+        .filter(user::Column::Email.eq(&body.email))
+        .one(&state.db)
         .await?;
 
     let Some(user) = user else {
@@ -73,15 +67,13 @@ async fn request_reset(
     let token_hash = hash_token(&token);
     let expires_at = Utc::now() + Duration::hours(1);
 
-    state
-        .database
-        .collection::<PasswordResetToken>("password_reset_tokens")
-        .insert_one(PasswordResetToken {
-            token_hash,
-            user_id: user.id,
-            expires_at,
-        })
-        .await?;
+    let new_token = password_reset_token::ActiveModel {
+        token_hash: Set(token_hash),
+        user_id: Set(user.id),
+        expires_at: Set(expires_at),
+        ..Default::default()
+    };
+    new_token.insert(&state.db).await?;
 
     if let Err(e) = mail.send_password_reset(&user.email, &token).await {
         tracing::warn!(error = ?e, "Failed to send password reset email");
@@ -123,10 +115,9 @@ async fn confirm_reset(
 ) -> AxumResult<Json<ConfirmResetResponse>> {
     let token_hash = hash_token(&body.token);
 
-    let token_doc = state
-        .database
-        .collection::<PasswordResetToken>("password_reset_tokens")
-        .find_one(doc! { "token_hash": &token_hash })
+    let token_doc = password_reset_token::Entity::find()
+        .filter(password_reset_token::Column::TokenHash.eq(&token_hash))
+        .one(&state.db)
         .await?;
 
     let Some(token_doc) = token_doc else {
@@ -136,10 +127,8 @@ async fn confirm_reset(
     };
 
     if Utc::now() > token_doc.expires_at {
-        state
-            .database
-            .collection::<PasswordResetToken>("password_reset_tokens")
-            .delete_one(doc! { "token_hash": &token_hash })
+        password_reset_token::Entity::delete_by_id(token_doc.id)
+            .exec(&state.db)
             .await?;
         return Err(AxumError::bad_request(eyre::eyre!(
             "Invalid or expired token"
@@ -148,29 +137,42 @@ async fn confirm_reset(
 
     let new_hash = hash_password(&body.new_password)?;
 
-    state
-        .database
-        .collection::<User>("users")
-        .update_one(
-            doc! { "_id": token_doc.user_id },
-            doc! { "$set": { "auth_factors.password.password_hash": &new_hash } },
-        )
-        .await?
-        .matched_count
-        .eq(&1)
-        .then_some(())
-        .wrap_err("User not found")?;
+    // Update the password record
+    let pw = password::Entity::find()
+        .filter(password::Column::UserId.eq(token_doc.user_id))
+        .one(&state.db)
+        .await?;
+
+    if let Some(pw) = pw {
+        let mut active: password::ActiveModel = pw.into();
+        active.password_hash = Set(new_hash);
+        active.update(&state.db).await?;
+    } else {
+        // No password record exists yet — create one
+        let new_pw = password::ActiveModel {
+            user_id: Set(token_doc.user_id),
+            password_hash: Set(new_hash),
+        };
+        new_pw.insert(&state.db).await?;
+
+        upsert_auth_method(&state.db, token_doc.user_id, auth_method::Method::Password).await?;
+    }
 
     if let Err(e) =
-        invalidate_user_sessions(&state.database, &state.redis_pool, &token_doc.user_id, None).await
+        invalidate_user_sessions(&state.db, &state.redis_pool, token_doc.user_id, None).await
     {
         tracing::error!(error = ?e, "Failed to invalidate user sessions after password reset");
     }
 
-    state
-        .database
-        .collection::<PasswordResetToken>("password_reset_tokens")
-        .delete_one(doc! { "token_hash": &token_hash })
+    refresh_token::Entity::update_many()
+        .col_expr(refresh_token::Column::Revoked, Expr::value(true))
+        .filter(refresh_token::Column::UserId.eq(token_doc.user_id))
+        .filter(refresh_token::Column::Revoked.eq(false))
+        .exec(&state.db)
+        .await?;
+
+    password_reset_token::Entity::delete_by_id(token_doc.id)
+        .exec(&state.db)
         .await?;
 
     Ok(Json(ConfirmResetResponse { success: true }))

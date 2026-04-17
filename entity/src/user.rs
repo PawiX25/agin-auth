@@ -14,6 +14,7 @@ pub struct Model {
     pub email: String,
     pub email_confirmed: bool,
     pub is_admin: bool,
+    pub groups: Vec<String>,
     pub created_at: DateTimeUtc,
 }
 

@@ -48,40 +48,6 @@ pub struct AccessTokenClaims {
     pub client_id: String,
 }
 
-/// Authorization code stored in MongoDB.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AuthorizationCode {
-    pub code_hash: String,
-    pub client_id: String,
-    pub user_id: String,
-    pub redirect_uri: String,
-    pub scope: String,
-    pub nonce: Option<String>,
-    pub code_challenge: Option<String>,
-    pub code_challenge_method: Option<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub used: bool,
-}
-
-/// Refresh token stored in MongoDB.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RefreshToken {
-    pub token_hash: String,
-    pub client_id: String,
-    pub user_id: String,
-    pub scope: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub revoked: bool,
-}
-
-/// Revoked access token entry (short-lived blocklist for JWT access tokens).
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RevokedAccessToken {
-    pub token_hash: String,
-    pub client_id: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
 /// Generate an OIDC signing key file at the default path.
 /// Called during first-run config generation.
 pub fn generate_oidc_key_file(key_file: &str) -> Result<()> {

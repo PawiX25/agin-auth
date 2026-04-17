@@ -1,5 +1,5 @@
-use color_eyre::eyre::{Context, Result};
 use chrono::Utc;
+use color_eyre::eyre::{Context, Result};
 use entity::session;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, ConnectOptions, Database, DatabaseConnection,
@@ -12,7 +12,7 @@ use tower_sessions::{
 };
 use tower_sessions_redis_store::{
     RedisStore,
-    fred::prelude::{ClientLike, Config, Pool},
+    fred::prelude::{ClientLike, Config, KeysInterface, Pool},
 };
 
 use crate::settings::Settings;
@@ -103,6 +103,36 @@ pub async fn record_session(
             .insert(db)
             .await
             .wrap_err("Failed to insert session record")?;
+    }
+
+    Ok(())
+}
+
+pub async fn invalidate_user_sessions(
+    db: &DatabaseConnection,
+    redis_pool: &Pool,
+    user_id: i32,
+    except_session_key: Option<&str>,
+) -> Result<()> {
+    let mut query = session::Entity::find().filter(session::Column::UserId.eq(user_id));
+
+    if let Some(except) = except_session_key {
+        query = query.filter(session::Column::SessionKey.ne(except));
+    }
+
+    let records = query.all(db).await.wrap_err("Failed to query sessions")?;
+
+    for record in &records {
+        let _: i64 = redis_pool.del(&record.session_key).await.unwrap_or(0);
+    }
+
+    let ids: Vec<i32> = records.iter().map(|r| r.id).collect();
+    if !ids.is_empty() {
+        session::Entity::delete_many()
+            .filter(session::Column::Id.is_in(ids))
+            .exec(db)
+            .await
+            .wrap_err("Failed to delete session records")?;
     }
 
     Ok(())

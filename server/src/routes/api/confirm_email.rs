@@ -3,15 +3,15 @@ use axum::{
     extract::Query,
     response::{IntoResponse, Redirect},
 };
-use chrono::{DateTime, Duration, Utc};
-use mongodb::bson::{DateTime as BsonDateTime, doc, oid::ObjectId};
-use serde::{Deserialize, Serialize};
+use chrono::{Duration, Utc};
+use entity::{email_confirmation_token, user};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use serde::Deserialize;
 use utoipa::IntoParams;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::User,
     state::AppState,
     utils::{generate_reset_token, hash_token},
 };
@@ -20,30 +20,23 @@ pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(confirm_email))
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EmailConfirmationToken {
-    pub token_hash: String,
-    pub user_id: ObjectId,
-    pub expires_at: DateTime<Utc>,
-}
-
 pub async fn send_confirmation_email(
     state: &AppState,
-    user_id: ObjectId,
+    user_id: i32,
     email: &str,
 ) -> AxumResult<()> {
     let Some(mail) = &state.mail_service else {
-        state
-            .database
-            .collection::<User>("users")
-            .update_one(
-                doc! { "_id": user_id },
-                doc! { "$set": { "email_confirmed": true } },
+        user::Entity::update_many()
+            .col_expr(
+                user::Column::EmailConfirmed,
+                sea_orm::sea_query::Expr::value(true),
             )
+            .filter(user::Column::Id.eq(user_id))
+            .exec(&state.db)
             .await?;
 
         tracing::info!(
-            %user_id,
+            user_id,
             "Mail service not configured, auto-confirming email for newly registered user"
         );
         return Ok(());
@@ -53,18 +46,16 @@ pub async fn send_confirmation_email(
     let token_hash = hash_token(&token);
     let expires_at = Utc::now() + Duration::hours(24);
 
-    state
-        .database
-        .collection::<EmailConfirmationToken>("email_confirmation_tokens")
-        .insert_one(EmailConfirmationToken {
-            token_hash,
-            user_id,
-            expires_at,
-        })
-        .await?;
+    let new_token = email_confirmation_token::ActiveModel {
+        token_hash: Set(token_hash),
+        user_id: Set(user_id),
+        expires_at: Set(expires_at),
+        ..Default::default()
+    };
+    new_token.insert(&state.db).await?;
 
     if let Err(error) = mail.send_email_confirmation(email, &token).await {
-        tracing::warn!(error = ?error, %user_id, "Failed to send confirmation email");
+        tracing::warn!(error = ?error, user_id, "Failed to send confirmation email");
         return Err(AxumError::service_unavailable(color_eyre::eyre::eyre!(
             "Confirmation email service is unavailable"
         )));
@@ -100,10 +91,9 @@ async fn confirm_email(
 
     let token_hash = hash_token(&query.token);
 
-    let token_doc = match state
-        .database
-        .collection::<EmailConfirmationToken>("email_confirmation_tokens")
-        .find_one_and_delete(doc! { "token_hash": &token_hash })
+    let token_doc = match email_confirmation_token::Entity::find()
+        .filter(email_confirmation_token::Column::TokenHash.eq(&token_hash))
+        .one(&state.db)
         .await
     {
         Ok(Some(doc)) => doc,
@@ -114,14 +104,19 @@ async fn confirm_email(
         }
     };
 
+    // Delete the token (single use)
+    let _ = email_confirmation_token::Entity::delete_by_id(token_doc.id)
+        .exec(&state.db)
+        .await;
+
     if Utc::now() > token_doc.expires_at {
         // Clean up other expired tokens in the background
-        let db = state.database.clone();
+        let db = state.db.clone();
         tokio::spawn(async move {
-            let now = BsonDateTime::now();
-            if let Err(e) = db
-                .collection::<EmailConfirmationToken>("email_confirmation_tokens")
-                .delete_many(doc! { "expires_at": { "$lt": now } })
+            let now = Utc::now();
+            if let Err(e) = email_confirmation_token::Entity::delete_many()
+                .filter(email_confirmation_token::Column::ExpiresAt.lt(now))
+                .exec(&db)
                 .await
             {
                 tracing::warn!(error = ?e, "Failed to clean up expired email confirmation tokens");
@@ -130,17 +125,17 @@ async fn confirm_email(
         return redirect_error("expired");
     }
 
-    let result = state
-        .database
-        .collection::<User>("users")
-        .update_one(
-            doc! { "_id": token_doc.user_id },
-            doc! { "$set": { "email_confirmed": true } },
+    let result = user::Entity::update_many()
+        .col_expr(
+            user::Column::EmailConfirmed,
+            sea_orm::sea_query::Expr::value(true),
         )
+        .filter(user::Column::Id.eq(token_doc.user_id))
+        .exec(&state.db)
         .await;
 
     match result {
-        Ok(r) if r.matched_count > 0 => Redirect::temporary("/confirm-email?status=success"),
+        Ok(r) if r.rows_affected > 0 => Redirect::temporary("/confirm-email?status=success"),
         Ok(_) => redirect_error("not_found"),
         Err(e) => {
             tracing::warn!(error = ?e, "Failed to update user email confirmation status");

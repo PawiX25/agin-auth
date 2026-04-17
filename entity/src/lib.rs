@@ -1,7 +1,13 @@
+pub mod application;
 pub mod auth_method;
+pub mod authorization_code;
+pub mod email_confirmation_token;
 pub mod password;
+pub mod password_reset_token;
 pub mod pgp;
 pub mod recovery_code;
+pub mod refresh_token;
+pub mod revoked_access_token;
 pub mod session;
 pub mod totp;
 pub mod user;

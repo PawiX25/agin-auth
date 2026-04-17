@@ -1,13 +1,12 @@
 use axum::{Extension, Json};
-use futures::TryStreamExt;
-use mongodb::bson::doc;
+use entity::{application, user};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Serialize;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     axum_error::AxumResult,
-    database::{Application, User},
     middlewares::require_auth::{ForbiddenError, UnauthorizedError, UserId},
     state::AppState,
 };
@@ -38,21 +37,11 @@ async fn get_my_applications(
     Extension(state): Extension<AppState>,
     Extension(user_id): Extension<UserId>,
 ) -> AxumResult<Json<Vec<UserApplication>>> {
-    let user = state
-        .database
-        .collection::<User>("users")
-        .find_one(doc! { "_id": *user_id })
-        .await?;
+    let user = user::Entity::find_by_id(*user_id).one(&state.db).await?;
 
-    let user_groups = user.map(|u| u.groups).unwrap_or_default();
+    let user_groups: Vec<String> = user.map(|u| u.groups).unwrap_or_default();
 
-    let apps: Vec<Application> = state
-        .database
-        .collection("applications")
-        .find(doc! {})
-        .await?
-        .try_collect()
-        .await?;
+    let apps: Vec<application::Model> = application::Entity::find().all(&state.db).await?;
 
     let visible_apps = apps
         .into_iter()

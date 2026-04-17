@@ -45,12 +45,14 @@ toml = "1.1.2"
 totp-rs = { version = "5.7.1", features = ["gen_secret", "otpauth"] }
 tower = { version = "0.5.3", features = ["full", "tokio", "log"] }
 tower-http = { version = "0.6.8", features = ["trace"] }
+tower_governor = "0.8.0"
 tower-sessions = { workspace = true, default-features = true }
 tower-sessions-redis-store.workspace = true
 tracing.workspace = true
 tracing-error.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
+urlencoding = "2.1.3"
 utoipa = { workspace = true, features = ["axum_extras", "url", "uuid"] }
 utoipa-axum = "0.2.0"
 utoipa-rapidoc = { version = "6.0.0", features = ["axum"] }

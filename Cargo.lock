@@ -1374,6 +1374,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.28.0",
+ "utoipa",
 ]
 
 [[package]]
@@ -4428,6 +4429,7 @@ dependencies = [
  "tracing-error",
  "tracing-subscriber",
  "url",
+ "urlencoding",
  "utoipa",
  "utoipa-axum",
  "utoipa-rapidoc",

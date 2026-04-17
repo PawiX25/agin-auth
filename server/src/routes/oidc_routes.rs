@@ -6,12 +6,16 @@ use axum::{
 };
 use chrono::Utc;
 use color_eyre::eyre::{self, Context as _};
-use mongodb::bson::doc;
+use entity::application::ClientType;
+use entity::{application, authorization_code, refresh_token, revoked_access_token, user};
 use openidconnect::{
     AccessToken, Audience, EmptyAdditionalClaims, EndUserEmail, EndUserFamilyName,
     EndUserGivenName, EndUserName, EndUserUsername, IssuerUrl, LocalizedClaim, Nonce,
     SubjectIdentifier,
     core::{CoreIdToken, CoreIdTokenClaims, CoreJwsSigningAlgorithm},
+};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait, sea_query::Expr,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -22,8 +26,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     axum_error::{AxumError, AxumResult},
-    database::{Application, ClientType, User, get_user_by_uuid},
-    oidc::{AccessTokenClaims, AuthorizationCode, RefreshToken, RevokedAccessToken},
+    oidc::AccessTokenClaims,
     state::AppState,
     utils::{generate_reset_token, hash_token},
 };
@@ -109,9 +112,7 @@ async fn authorize_get(
     Query(params): Query<AuthorizeQuery>,
 ) -> AxumResult<Json<AuthorizeInfo>> {
     // Check user is authenticated
-    let user_id = session
-        .get::<mongodb::bson::oid::ObjectId>("user_id")
-        .await?;
+    let user_id = session.get::<i32>("user_id").await?;
     let auth_state = session
         .get::<crate::routes::api::AuthState>("auth_state")
         .await?;
@@ -135,10 +136,9 @@ async fn authorize_get(
     }
 
     // Look up application by client_id
-    let app = state
-        .database
-        .collection::<Application>("applications")
-        .find_one(doc! { "client_id": &params.client_id })
+    let app = application::Entity::find()
+        .filter(application::Column::ClientId.eq(&params.client_id))
+        .one(&state.db)
         .await
         .wrap_err("Database error")?
         .ok_or_else(|| AxumError::bad_request(eyre::eyre!("Unknown client_id")))?;
@@ -244,7 +244,7 @@ async fn authorize_post(
 ) -> AxumResult<Json<AuthorizeResponse>> {
     // Check user is authenticated
     let user_id = session
-        .get::<mongodb::bson::oid::ObjectId>("user_id")
+        .get::<i32>("user_id")
         .await?
         .ok_or_else(|| AxumError::unauthorized(eyre::eyre!("Not authenticated")))?;
 
@@ -259,10 +259,9 @@ async fn authorize_post(
     }
 
     // Validate application
-    let app = state
-        .database
-        .collection::<Application>("applications")
-        .find_one(doc! { "client_id": &body.client_id })
+    let app = application::Entity::find()
+        .filter(application::Column::ClientId.eq(&body.client_id))
+        .one(&state.db)
         .await
         .wrap_err("Database error")?
         .ok_or_else(|| AxumError::bad_request(eyre::eyre!("Unknown client_id")))?;
@@ -310,10 +309,8 @@ async fn authorize_post(
     }
 
     // Check user group access
-    let user = state
-        .database
-        .collection::<User>("users")
-        .find_one(doc! { "_id": &user_id })
+    let user = user::Entity::find_by_id(user_id)
+        .one(&state.db)
         .await
         .wrap_err("Database error")?
         .ok_or_else(|| AxumError::bad_request(eyre::eyre!("User not found")))?;
@@ -331,23 +328,22 @@ async fn authorize_post(
     let code = generate_reset_token(); // 64 char random string
     let code_hash = hash_token(&code);
 
-    let auth_code = AuthorizationCode {
-        code_hash,
-        client_id: body.client_id.clone(),
-        user_id: user_id.to_hex(),
-        redirect_uri: body.redirect_uri.clone(),
-        scope: filtered_scope,
-        nonce: body.nonce.clone(),
-        code_challenge: body.code_challenge.clone(),
-        code_challenge_method: body.code_challenge_method.clone(),
-        created_at: Utc::now(),
-        used: false,
+    let auth_code = authorization_code::ActiveModel {
+        code_hash: Set(code_hash),
+        client_id: Set(body.client_id.clone()),
+        user_id: Set(user_id),
+        redirect_uri: Set(body.redirect_uri.clone()),
+        scope: Set(filtered_scope),
+        nonce: Set(body.nonce.clone()),
+        code_challenge: Set(body.code_challenge.clone()),
+        code_challenge_method: Set(body.code_challenge_method.clone()),
+        created_at: Set(Utc::now()),
+        used: Set(false),
+        ..Default::default()
     };
 
-    state
-        .database
-        .collection::<AuthorizationCode>("authorization_codes")
-        .insert_one(auth_code)
+    auth_code
+        .insert(&state.db)
         .await
         .wrap_err("Failed to store authorization code")?;
 
@@ -465,11 +461,10 @@ async fn authenticate_client(
     client_id: &str,
     client_secret: &Option<String>,
     unknown_client_status: StatusCode,
-) -> Result<Application, axum::response::Response> {
-    let app = state
-        .database
-        .collection::<Application>("applications")
-        .find_one(doc! { "client_id": client_id })
+) -> Result<application::Model, axum::response::Response> {
+    let app = application::Entity::find()
+        .filter(application::Column::ClientId.eq(client_id))
+        .one(&state.db)
         .await
         .map_err(|_| {
             token_error(
@@ -540,15 +535,13 @@ async fn handle_authorization_code_grant(
         )
     })?;
 
-    // Atomically find and mark code as used
+    authenticate_client(state, client_id, client_secret, StatusCode::BAD_REQUEST).await?;
+
     let code_hash = hash_token(code);
-    let auth_code = state
-        .database
-        .collection::<AuthorizationCode>("authorization_codes")
-        .find_one_and_update(
-            doc! { "code_hash": &code_hash, "used": false },
-            doc! { "$set": { "used": true } },
-        )
+    let auth_code = authorization_code::Entity::find()
+        .filter(authorization_code::Column::CodeHash.eq(&code_hash))
+        .filter(authorization_code::Column::Used.eq(false))
+        .one(&state.db)
         .await
         .map_err(|_| {
             token_error(
@@ -631,22 +624,9 @@ async fn handle_authorization_code_grant(
         }
     }
 
-    // Validate client_secret for confidential clients
-    authenticate_client(state, client_id, client_secret, StatusCode::BAD_REQUEST).await?;
-
     // Get user for claims
-    let user_oid = mongodb::bson::oid::ObjectId::parse_str(&auth_code.user_id).map_err(|_| {
-        token_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "server_error",
-            "Invalid user_id",
-        )
-    })?;
-
-    let user = state
-        .database
-        .collection::<User>("users")
-        .find_one(doc! { "_id": &user_oid })
+    let user = user::Entity::find_by_id(auth_code.user_id)
+        .one(&state.db)
         .await
         .map_err(|_| {
             token_error(
@@ -753,37 +733,76 @@ async fn handle_authorization_code_grant(
         None
     };
 
-    // Generate refresh token if offline_access scope requested
     let refresh_token = if scopes.contains(&"offline_access") {
-        let raw_token = generate_reset_token();
-        let token_hash = hash_token(&raw_token);
-
-        let rt = RefreshToken {
-            token_hash,
-            client_id: client_id.clone(),
-            user_id: auth_code.user_id.clone(),
-            scope: auth_code.scope.clone(),
-            created_at: Utc::now(),
-            revoked: false,
-        };
-
-        state
-            .database
-            .collection::<RefreshToken>("refresh_tokens")
-            .insert_one(rt)
-            .await
-            .map_err(|_| {
-                token_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "server_error",
-                    "Failed to store refresh token",
-                )
-            })?;
-
-        Some(raw_token)
+        Some(generate_reset_token())
     } else {
         None
     };
+
+    let txn = state.db.begin().await.map_err(|_| {
+        token_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "Database error",
+        )
+    })?;
+
+    let consume_result = authorization_code::Entity::update_many()
+        .col_expr(authorization_code::Column::Used, Expr::value(true))
+        .filter(authorization_code::Column::Id.eq(auth_code.id))
+        .filter(authorization_code::Column::Used.eq(false))
+        .exec(&txn)
+        .await;
+
+    let consume_result = match consume_result {
+        Ok(result) => result.rows_affected,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return Err(token_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "Database error",
+            ));
+        }
+    };
+
+    if consume_result != 1 {
+        let _ = txn.rollback().await;
+        return Err(token_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "Invalid or expired authorization code",
+        ));
+    }
+
+    if let Some(raw_token) = refresh_token.as_ref() {
+        let rt = refresh_token::ActiveModel {
+            token_hash: Set(hash_token(raw_token)),
+            client_id: Set(client_id.clone()),
+            user_id: Set(auth_code.user_id),
+            scope: Set(auth_code.scope.clone()),
+            created_at: Set(Utc::now()),
+            revoked: Set(false),
+            ..Default::default()
+        };
+
+        if rt.insert(&txn).await.is_err() {
+            let _ = txn.rollback().await;
+            return Err(token_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "Failed to store refresh token",
+            ));
+        }
+    }
+
+    txn.commit().await.map_err(|_| {
+        token_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "Database error",
+        )
+    })?;
 
     Ok(Json(TokenResponse {
         access_token,
@@ -809,14 +828,21 @@ async fn handle_refresh_token_grant(
         )
     })?;
 
-    let token_hash = hash_token(raw_token);
-    let stored = state
-        .database
-        .collection::<RefreshToken>("refresh_tokens")
-        .find_one_and_update(
-            doc! { "token_hash": &token_hash, "revoked": false },
-            doc! { "$set": { "revoked": true } },
+    let req_client_id = client_id.as_ref().ok_or_else(|| {
+        token_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Missing client_id",
         )
+    })?;
+
+    authenticate_client(state, req_client_id, client_secret, StatusCode::BAD_REQUEST).await?;
+
+    let token_hash = hash_token(raw_token);
+    let stored = refresh_token::Entity::find()
+        .filter(refresh_token::Column::TokenHash.eq(&token_hash))
+        .filter(refresh_token::Column::Revoked.eq(false))
+        .one(&state.db)
         .await
         .map_err(|_| {
             token_error(
@@ -843,15 +869,6 @@ async fn handle_refresh_token_grant(
         ));
     }
 
-    // Validate client
-    let req_client_id = client_id.as_ref().ok_or_else(|| {
-        token_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "Missing client_id",
-        )
-    })?;
-
     if stored.client_id != *req_client_id {
         return Err(token_error(
             StatusCode::BAD_REQUEST,
@@ -860,22 +877,9 @@ async fn handle_refresh_token_grant(
         ));
     }
 
-    // Validate client_secret for confidential clients
-    authenticate_client(state, req_client_id, client_secret, StatusCode::BAD_REQUEST).await?;
-
     // Get user
-    let user_oid = mongodb::bson::oid::ObjectId::parse_str(&stored.user_id).map_err(|_| {
-        token_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "server_error",
-            "Invalid user_id",
-        )
-    })?;
-
-    let user = state
-        .database
-        .collection::<User>("users")
-        .find_one(doc! { "_id": &user_oid })
+    let user = user::Entity::find_by_id(stored.user_id)
+        .one(&state.db)
         .await
         .map_err(|_| {
             token_error(
@@ -919,19 +923,69 @@ async fn handle_refresh_token_grant(
     // Issue new refresh token (rotation)
     let raw_new_token = generate_reset_token();
     let new_token_hash = hash_token(&raw_new_token);
-    let new_refresh_token = RefreshToken {
-        token_hash: new_token_hash,
-        user_id: stored.user_id,
-        client_id: req_client_id.clone(),
-        scope: stored.scope.clone(),
-        created_at: Utc::now(),
-        revoked: false,
-    };
-    let _ = state
-        .database
-        .collection::<RefreshToken>("refresh_tokens")
-        .insert_one(new_refresh_token)
+
+    let txn = state.db.begin().await.map_err(|_| {
+        token_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "Database error",
+        )
+    })?;
+
+    let revoke_result = refresh_token::Entity::update_many()
+        .col_expr(refresh_token::Column::Revoked, Expr::value(true))
+        .filter(refresh_token::Column::Id.eq(stored.id))
+        .filter(refresh_token::Column::Revoked.eq(false))
+        .exec(&txn)
         .await;
+
+    let revoke_result = match revoke_result {
+        Ok(result) => result.rows_affected,
+        Err(_) => {
+            let _ = txn.rollback().await;
+            return Err(token_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "Database error",
+            ));
+        }
+    };
+
+    if revoke_result != 1 {
+        let _ = txn.rollback().await;
+        return Err(token_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "Invalid or revoked refresh token",
+        ));
+    }
+
+    let new_refresh_token = refresh_token::ActiveModel {
+        token_hash: Set(new_token_hash),
+        user_id: Set(stored.user_id),
+        client_id: Set(req_client_id.clone()),
+        scope: Set(stored.scope.clone()),
+        created_at: Set(Utc::now()),
+        revoked: Set(false),
+        ..Default::default()
+    };
+
+    if new_refresh_token.insert(&txn).await.is_err() {
+        let _ = txn.rollback().await;
+        return Err(token_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "Failed to store refresh token",
+        ));
+    }
+
+    txn.commit().await.map_err(|_| {
+        token_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "Database error",
+        )
+    })?;
 
     Ok(Json(TokenResponse {
         access_token,
@@ -989,6 +1043,28 @@ async fn userinfo(
             )
         })?;
 
+    let token_hash = hash_token(auth_header);
+    let is_revoked = revoked_access_token::Entity::find()
+        .filter(revoked_access_token::Column::TokenHash.eq(&token_hash))
+        .one(&state.db)
+        .await
+        .map_err(|_| {
+            token_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "Database error",
+            )
+        })?
+        .is_some();
+
+    if is_revoked {
+        return Err(token_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_token",
+            "Token revoked",
+        ));
+    }
+
     // Verify access token
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
     validation.set_audience(&[""]); // We'll skip audience validation for userinfo
@@ -1018,7 +1094,9 @@ async fn userinfo(
         )
     })?;
 
-    let user = get_user_by_uuid(&state.database, &user_uuid)
+    let user = user::Entity::find()
+        .filter(user::Column::Uuid.eq(user_uuid))
+        .one(&state.db)
         .await
         .map_err(|_| {
             token_error(
@@ -1101,13 +1179,11 @@ async fn revoke(
     let token_hash = hash_token(&body.token);
 
     // Try revoking as refresh token (only if it belongs to the authenticated client)
-    let revoked = state
-        .database
-        .collection::<RefreshToken>("refresh_tokens")
-        .update_one(
-            doc! { "token_hash": &token_hash, "client_id": cid, "revoked": false },
-            doc! { "$set": { "revoked": true } },
-        )
+    let stored_rt = refresh_token::Entity::find()
+        .filter(refresh_token::Column::TokenHash.eq(&token_hash))
+        .filter(refresh_token::Column::ClientId.eq(cid.as_str()))
+        .filter(refresh_token::Column::Revoked.eq(false))
+        .one(&state.db)
         .await
         .map_err(|_| {
             token_error(
@@ -1117,7 +1193,10 @@ async fn revoke(
             )
         })?;
 
-    if revoked.modified_count > 0 {
+    if let Some(rt) = stored_rt {
+        let mut active_rt: refresh_token::ActiveModel = rt.into();
+        active_rt.revoked = Set(true);
+        let _ = active_rt.update(&state.db).await;
         return Ok(StatusCode::OK);
     }
 
@@ -1130,16 +1209,13 @@ async fn revoke(
         &validation,
     ) && token_data.claims.client_id == *cid
     {
-        let entry = RevokedAccessToken {
-            token_hash: token_hash.clone(),
-            client_id: cid.clone(),
-            created_at: Utc::now(),
+        let entry = revoked_access_token::ActiveModel {
+            token_hash: Set(token_hash.clone()),
+            client_id: Set(cid.clone()),
+            created_at: Set(Utc::now()),
+            ..Default::default()
         };
-        let _ = state
-            .database
-            .collection::<RevokedAccessToken>("revoked_access_tokens")
-            .insert_one(entry)
-            .await;
+        let _ = entry.insert(&state.db).await;
     }
 
     // Per RFC 7009: always return 200 even if token is unknown (no information leak)
@@ -1207,7 +1283,14 @@ async fn introspect(
         )
     })?;
 
-    authenticate_client(&state, cid, &client_secret, StatusCode::UNAUTHORIZED).await?;
+    let app = authenticate_client(&state, cid, &client_secret, StatusCode::UNAUTHORIZED).await?;
+    if !matches!(app.client_type, ClientType::Confidential) {
+        return Err(token_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "Introspection requires a confidential client",
+        ));
+    }
 
     let inactive = IntrospectResponse {
         active: false,
@@ -1232,12 +1315,15 @@ async fn introspect(
     ) {
         let claims = token_data.claims;
 
+        if claims.client_id != *cid {
+            return Ok(Json(inactive));
+        }
+
         // Check if this access token has been revoked
         let at_hash = hash_token(&body.token);
-        let is_revoked = state
-            .database
-            .collection::<RevokedAccessToken>("revoked_access_tokens")
-            .find_one(doc! { "token_hash": &at_hash })
+        let is_revoked = revoked_access_token::Entity::find()
+            .filter(revoked_access_token::Column::TokenHash.eq(&at_hash))
+            .one(&state.db)
             .await
             .ok()
             .flatten()
@@ -1249,7 +1335,9 @@ async fn introspect(
 
         // Look up the user for username
         let username = if let Ok(user_uuid) = uuid::Uuid::parse_str(&claims.sub) {
-            get_user_by_uuid(&state.database, &user_uuid)
+            user::Entity::find()
+                .filter(user::Column::Uuid.eq(user_uuid))
+                .one(&state.db)
                 .await
                 .ok()
                 .flatten()
@@ -1273,10 +1361,11 @@ async fn introspect(
 
     // Try as refresh token
     let token_hash = hash_token(&body.token);
-    if let Ok(Some(stored)) = state
-        .database
-        .collection::<RefreshToken>("refresh_tokens")
-        .find_one(doc! { "token_hash": &token_hash, "revoked": false })
+    if let Ok(Some(stored)) = refresh_token::Entity::find()
+        .filter(refresh_token::Column::TokenHash.eq(&token_hash))
+        .filter(refresh_token::Column::ClientId.eq(cid.as_str()))
+        .filter(refresh_token::Column::Revoked.eq(false))
+        .one(&state.db)
         .await
     {
         let age = Utc::now() - stored.created_at;
