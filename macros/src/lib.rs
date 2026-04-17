@@ -7,7 +7,6 @@ use proc_macro::TokenStream;
 use crate::register::list::FactorList;
 
 /// Generate Axum handlers annotated with `utoipa` for the factor.
-/// This allows for end-to-end typing of authentication factors in the API documentation.
 #[proc_macro_attribute]
 pub fn factor(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = match darling::ast::NestedMeta::parse_meta_list(args.into()) {
@@ -22,19 +21,19 @@ pub fn factor(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let input = syn::parse_macro_input!(input as syn::ItemImpl);
 
-    match factor::factor(args, input) {
+    match factor::factor(&args, input) {
         Ok(x) => x,
         Err(e) => e.write_errors().into(),
     }
 }
 
 /// Collect all factors and generate Axum router with them.
-/// Also generate an enum for SeaORM for storage.
+/// Also generate `FactorConfig` and `FactorName` enums.
 #[proc_macro]
 pub fn register_factors(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as FactorList);
 
-    match register::register(input) {
+    match register::register(&input) {
         Ok(x) => x,
         Err(e) => e.to_compile_error().into(),
     }

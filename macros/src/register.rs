@@ -9,16 +9,24 @@ use crate::register::{entry::FactorEntry, list::FactorList};
 pub mod entry;
 pub mod list;
 
-pub fn register(factor_list: FactorList) -> Result<proc_macro::TokenStream, syn::Error> {
+pub fn register(factor_list: &FactorList) -> Result<proc_macro::TokenStream, syn::Error> {
     let mut output = TokenStream::new();
 
     let mut seen_factors = HashSet::new();
-
     let mut router = quote! { ::utoipa_axum::router::OpenApiRouter::new() };
-    let mut enum_variants = TokenStream::new();
+    let mut config_variants = TokenStream::new();
+    let mut name_variants = TokenStream::new();
+    let mut flow_type_arms = TokenStream::new();
+    let mut security_level_arms = TokenStream::new();
+    let mut role_arms = TokenStream::new();
 
-    for FactorEntry { path, slug } in &factor_list.entries {
-        // Ensure factor is unique
+    for FactorEntry {
+        path,
+        slug,
+        last_segment,
+        module_segment,
+    } in &factor_list.entries
+    {
         if seen_factors.contains(slug) {
             return Err(syn::Error::new_spanned(
                 slug,
@@ -27,38 +35,42 @@ pub fn register(factor_list: FactorList) -> Result<proc_macro::TokenStream, syn:
         }
         seen_factors.insert(slug);
 
-        let last_segment = path
-            .segments
-            .last()
-            .ok_or_else(|| syn::Error::new_spanned(path, "expected a non-empty path"))?;
-
-        let module_segment = path
-            .segments
-            .iter()
-            .nth_back(1)
-            .ok_or_else(|| syn::Error::new_spanned(path, "expected a module path"))?;
-
         let last_segment_str =
             LitStr::new(&last_segment.ident.to_string(), last_segment.ident.span());
 
-        // Validate the slug
         let slug_assertion = quote! {
+            #[doc(hidden)]
             const _: () = assert!(
-                ::auth_core::str_eq(<#path as ::auth_core::Factor>::SLUG, #slug),
-                concat!("slug missmatch for factor `", #last_segment_str, "`: slug `", #slug, "` doesn't match trait definition")
+                ::auth_core::str_eq(<#path as ::auth_core::FactorSlug>::SLUG, #slug),
+                concat!("slug mismatch for factor `", #last_segment_str, "`: slug `", #slug, "` doesn't match trait definition")
             );
         };
         output.extend(slug_assertion);
 
-        // Register the factor to the router
         router.extend(quote! {
             .merge(#module_segment::routes())
         });
 
-        // Register the factor to the enum
         let variant_name = &last_segment.ident;
-        enum_variants.extend(quote! {
+
+        config_variants.extend(quote! {
+            #[serde(rename = #slug)]
             #variant_name(<#path as ::auth_core::Factor>::Config),
+        });
+
+        name_variants.extend(quote! {
+            #[serde(rename = #slug)]
+            #variant_name,
+        });
+
+        flow_type_arms.extend(quote! {
+            Self::#variant_name => <#path as ::auth_core::FactorMetadata>::FLOW_TYPE,
+        });
+        security_level_arms.extend(quote! {
+            Self::#variant_name => <#path as ::auth_core::FactorMetadata>::SECURITY_LEVEL,
+        });
+        role_arms.extend(quote! {
+            Self::#variant_name => <#path as ::auth_core::FactorMetadata>::ROLE,
         });
     }
 
@@ -69,12 +81,39 @@ pub fn register(factor_list: FactorList) -> Result<proc_macro::TokenStream, syn:
     };
     output.extend(handler);
 
-    let factors_enum = quote! {
+    output.extend(quote! {
+        #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
         pub enum FactorConfig {
-            #enum_variants
+            #config_variants
         }
-    };
-    output.extend(factors_enum);
+    });
+
+    output.extend(quote! {
+        #[derive(Clone, Copy, PartialEq, Eq, Debug, ::serde::Serialize, ::serde::Deserialize)]
+        pub enum FactorName {
+            #name_variants
+        }
+
+        impl ::auth_core::FactorMetadataDynamic for FactorName {
+            fn flow_type(&self) -> ::auth_core::FlowType {
+                match self {
+                    #flow_type_arms
+                }
+            }
+
+            fn security_level(&self) -> ::auth_core::SecurityLevel {
+                match self {
+                    #security_level_arms
+                }
+            }
+
+            fn role(&self) -> ::auth_core::FactorRole {
+                match self {
+                    #role_arms
+                }
+            }
+        }
+    });
 
     Ok(output.into())
 }

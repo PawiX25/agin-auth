@@ -2,7 +2,7 @@ use proc_macro2::{Ident, Span};
 
 use crate::factor::args::ImplKind;
 
-pub fn generate_router(routes: Vec<syn::Ident>, impl_kind: ImplKind) -> proc_macro2::TokenStream {
+pub fn generate_router(routes: &[syn::Ident], impl_kind: ImplKind) -> proc_macro2::TokenStream {
     let router_ident = Ident::new(
         match impl_kind {
             ImplKind::Factor => "factor",

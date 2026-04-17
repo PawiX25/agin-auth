@@ -1,11 +1,13 @@
-use quote::ToTokens;
+use proc_macro2::TokenStream;
+use quote::{ToTokens, quote};
+use syn::TypePath;
 
 use crate::{
     factor::{
         args::ImplKind, definitions::METHODS, generate_handler::generate_handler,
         router::generate_router,
     },
-    util::{const_impl_exists, extract_methods},
+    util::extract_methods,
 };
 
 pub mod args;
@@ -14,7 +16,7 @@ mod generate_handler;
 mod router;
 
 pub fn factor(
-    args: args::FactorArgs,
+    args: &args::FactorArgs,
     input: syn::ItemImpl,
 ) -> Result<proc_macro::TokenStream, darling::Error> {
     let self_ty = match &*input.self_ty {
@@ -35,22 +37,17 @@ pub fn factor(
         }
     };
 
-    let mut input = input;
-
     let impl_kind = ImplKind::detect(&trait_ty)?;
-
-    let slug = args.slug.as_str();
-    let skip_slug = const_impl_exists(&input, syn::parse_quote!(SLUG));
-    if !skip_slug && impl_kind == ImplKind::Factor {
-        let slug_item: syn::ImplItem = syn::parse_quote! {
-            const SLUG: &'static str = #slug;
-        };
-        input.items.insert(0, slug_item);
-    }
 
     let methods = extract_methods(input.clone());
     let mut tokens = input.into_token_stream();
     let mut routes = Vec::new();
+
+    let slug = args.slug.as_str();
+    if impl_kind == ImplKind::Factor {
+        let slug_impl = implement_slug(&self_ty, slug);
+        tokens.extend(slug_impl);
+    }
 
     for supported_method in METHODS {
         let Some(method_impl) = methods.get(supported_method.method) else {
@@ -76,17 +73,25 @@ pub fn factor(
         tokens.extend(handler);
     }
 
-    let router = generate_router(routes, impl_kind);
+    let router = generate_router(&routes, impl_kind);
     tokens.extend(router);
 
-    // Validate the slug
-    let slug_assertion = quote::quote! {
+    let slug_assertion = quote! {
+        #[doc(hidden)]
         const _: () = assert!(
-            ::auth_core::str_eq(<#self_ty as ::auth_core::Factor>::SLUG, #slug),
-            "slug missmatch"
+            ::auth_core::str_eq(<#self_ty as ::auth_core::FactorSlug>::SLUG, #slug),
+            "slug mismatch"
         );
     };
     tokens.extend(slug_assertion);
 
     Ok(tokens.into())
+}
+
+fn implement_slug(self_ty: &TypePath, slug: &str) -> TokenStream {
+    quote! {
+        impl ::auth_core::FactorSlug for #self_ty {
+            const SLUG: &'static str = #slug;
+        }
+    }
 }

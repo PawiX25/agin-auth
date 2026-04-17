@@ -52,15 +52,3 @@ pub fn extract_methods(input: syn::ItemImpl) -> HashMap<String, syn::ImplItemFn>
         })
         .collect::<HashMap<_, _>>()
 }
-
-pub fn const_impl_exists(input: &syn::ItemImpl, target_ident: syn::Ident) -> bool {
-    input.items.iter().any(|item| {
-        if let syn::ImplItem::Const(c) = item
-            && c.ident == target_ident
-        {
-            true
-        } else {
-            false
-        }
-    })
-}

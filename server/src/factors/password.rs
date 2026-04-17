@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use auth_core::{
     AuthenticateResponse, EnableResponse, Factor, FactorDisableError, FactorEnableError,
-    FactorError, FactorRole, FlowType, NoData, SecurityLevel,
+    FactorError, FactorMetadata, FactorRole, FlowType, NoData, SecurityLevel,
 };
 use macros::factor;
 use utoipa_axum::router::OpenApiRouter;
@@ -14,19 +14,21 @@ pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().merge(factor())
 }
 
-#[async_trait]
-#[factor(slug = "password")]
-impl Factor for PasswordFactor {
+impl FactorMetadata for PasswordFactor {
     const FLOW_TYPE: FlowType = FlowType::Simple;
     const SECURITY_LEVEL: SecurityLevel = SecurityLevel::Knowledge;
     const ROLE: FactorRole = FactorRole::Primary;
+}
 
+#[async_trait]
+#[factor(slug = "password")]
+impl Factor for PasswordFactor {
     type Config = NoData;
+    type FactorState = NoData;
 
     type EnableRequest = NoData;
     type EnableResponse = NoData;
 
-    // Enable Docs here
     async fn enable(
         &self,
         _args: Self::EnableRequest,
@@ -39,7 +41,6 @@ impl Factor for PasswordFactor {
     type DisableRequest = NoData;
     type DisableResponse = NoData;
 
-    // Disable Docs here
     async fn disable(
         &self,
         _args: Self::DisableRequest,
@@ -52,7 +53,6 @@ impl Factor for PasswordFactor {
     type AuthenticateRequest = NoData;
     type AuthenticateResponse = NoData;
 
-    /// Authenticate Docs here
     async fn authenticate(
         &self,
         _args: Self::AuthenticateRequest,
