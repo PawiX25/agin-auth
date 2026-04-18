@@ -9,6 +9,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use crate::{
     axum_error::{AxumError, AxumResult},
     middlewares::require_auth::{UnauthorizedError, UserId},
+    routes::api::settings::factors::recovery_codes::cleanup_if_only_recovery_codes_remain,
     state::AppState,
 };
 
@@ -67,6 +68,9 @@ async fn delete_webauthn(
             method.delete(&state.db).await?;
         }
     }
+
+    // If only recovery codes remain as 2FA, clean them up to prevent lockout
+    cleanup_if_only_recovery_codes_remain(&state.db, *user_id).await?;
 
     if let Some(mail) = &state.mail_service {
         let user = user::Entity::find_by_id(*user_id).one(&state.db).await?;

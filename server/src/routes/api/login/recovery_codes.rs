@@ -11,7 +11,10 @@ use crate::{
     auth_method_helpers::touch_auth_method,
     axum_error::{AxumError, AxumResult},
     middlewares::require_auth::UserId,
-    routes::api::{AuthState, settings::factors::recovery_codes::verify_recovery_code},
+    routes::api::{
+        AuthState,
+        settings::factors::recovery_codes::{disable_if_exhausted, verify_recovery_code},
+    },
     state::AppState,
 };
 
@@ -77,6 +80,9 @@ async fn login_with_recovery_code(
     }
 
     touch_auth_method(&state.db, *user_id, auth_method::Method::RecoveryCodes).await?;
+
+    // Disable recovery codes auth_method if all codes are exhausted
+    disable_if_exhausted(&state.db, *user_id).await?;
 
     session
         .insert("auth_state", AuthState::Authenticated)
